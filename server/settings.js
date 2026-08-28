@@ -27,6 +27,8 @@ const DEFAULTS = Object.freeze({
   showFleetExceptions: false,
   /** Overview search + status filter row. Off by default. */
   showOverviewSearch: false,
+  /** Last-applied GPU clock ECO level per Spark (sparkId → "off" | level). */
+  ecoLevels: {},
 });
 
 /** @type {typeof DEFAULTS} */
@@ -57,6 +59,10 @@ function _clampSettings(settings) {
   // Ensure density is valid
   if (s.density !== "comfortable" && s.density !== "compact") {
     s.density = DEFAULTS.density;
+  }
+  // Ensure ecoLevels is a plain object (sparkId → level)
+  if (typeof s.ecoLevels !== "object" || s.ecoLevels === null || Array.isArray(s.ecoLevels)) {
+    s.ecoLevels = {};
   }
   return s;
 }

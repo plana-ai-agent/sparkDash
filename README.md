@@ -269,7 +269,7 @@ docker compose -f docker-compose.dev.yml up --build
 - ${HOME}/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
 ```
 
-If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as** `id_ed25519`, or set `SSH_IDENTITY_FILE` to the path inside the container. Keep the file mode `600`. The unit that runs sparkDash itself should be added with **This host (local collectors — no SSH for metrics)**.
+If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as** `id_ed25519`, or set `SSH_IDENTITY_FILE` to the path inside the container. Keep the file mode `600`. The unit that runs sparkDash itself should be added with **This host (local collectors — no SSH for metrics)**. The shipped `docker-compose.yml` instead reads the host-side key path from `SPARKDASH_SSH_KEY` in `.env` (gitignored), so no key filename is committed.
 
 ---
 
@@ -428,6 +428,7 @@ Copy `.env.example` to `.env` if needed:
 | `SSH_IDENTITY_FILE` | _(unset)_ | Path **inside the process** to a private key (`ssh -i`). Use when the bind-mount is not a default OpenSSH name. |
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Reuse authenticated SSH transports for remote collectors. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
+| `SPARKDASH_SSH_KEY` | _(unset)_ | Docker only: **host** path of the SSH key bind-mounted for remote-unit key auth (volume source in `docker-compose.yml`). |
 
 > The listener and both Compose files default to `127.0.0.1`. Existing Docker users who opened
 > `http://<host-ip>:5555` must migrate to an SSH tunnel, authenticated reverse proxy, Tailscale

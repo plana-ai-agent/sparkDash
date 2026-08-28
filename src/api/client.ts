@@ -425,6 +425,51 @@ export function wakeAllSparks(): Promise<BatchPowerResult> {
   return apiFetch("/api/sparks/wake-all", { method: "POST" });
 }
 
+// ─── GPU clock ECO mode ──────────────────────────────
+/** Clock cap levels ("off" uncaps via -rgc). */
+export type EcoLevel = "2300" | "2200" | "2000" | "1800" | "off";
+
+/** Whether a persisted eco level is one of the known UI levels. */
+export function isEcoLevel(v: unknown): v is EcoLevel {
+  return (
+    typeof v === "string" &&
+    (v === "off" || v === "2300" || v === "2200" || v === "2000" || v === "1800")
+  );
+}
+
+export interface EcoStatusResponse {
+  /** True when the server has an ECO key configured (writes allowed). */
+  writes_enabled: boolean;
+  /** sparkId → "clock, temp, power" CSV line or "no reply". */
+  nodes: Record<string, string>;
+  /** sparkId → last applied level ("off" uncaps). Persisted server-side. */
+  eco_levels?: Record<string, string>;
+}
+
+export interface EcoSetResponse {
+  ok: boolean;
+  applied: EcoLevel;
+  /** sparkId → "ok" or an error text. */
+  nodes: Record<string, string>;
+}
+
+/** Live clock/temp/power readout for every Spark. */
+export function fetchEcoStatus(): Promise<EcoStatusResponse> {
+  return apiFetch("/api/eco/status");
+}
+
+/** Cap/uncap GPU clocks on one Spark (id) or the whole fleet ("fleet"). */
+export function setEcoLevel(
+  node: string,
+  level: EcoLevel,
+  key: string
+): Promise<EcoSetResponse> {
+  return apiFetch("/api/eco/set", {
+    method: "POST",
+    body: JSON.stringify({ node, level, key }),
+  });
+}
+
 // ─── Hermes update preview ───────────────────────────────
 /** Per-Spark update preview (release + pending commits + resolved view). */
 export function fetchHermesUpdates(id: string): Promise<HermesUpdatesResponse> {
