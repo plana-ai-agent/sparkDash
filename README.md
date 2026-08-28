@@ -51,9 +51,9 @@ It also supports **non-Spark units**: any Linux machine with an NVIDIA GPU (e.g.
 
 ## Latest version changelog
 
-### Version 1.8.2 — EXL3 tok/s and Docker Hub IPv6
-- **EXL3 live tok/s** — ExLlamaV3 OpenAI server is no longer treated as vLLM; decode/prefill rates come from `/health` token counters
-- **Docker Node image** — pull `node` from `public.ecr.aws` so Spark builds survive Docker Hub IPv6 failures
+### Version 1.8.5 — decode Structured default + code prompt
+- **Decode picker defaults to Structured** even after a Prose/Code/JSON run. A live running job still shows its type.
+- **Code type** is `clamp_00`…`clamp_49` Python helpers (no comments). The old LRU + comments prompt was prose-speed.
 
 Full history: [CHANGELOG.md](./CHANGELOG.md)
 
@@ -71,7 +71,7 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **ComfyUI** | Opt-in probe: queue/jobs, progress, cancel, Open link, inventory, overview chip |
 | **Hermes Agent** | Opt-in per unit: background update check (10 min), status badges, one-click or batch `hermes update` |
 | **Tailnet** | Opt-in probe: flags a unit that is healthy on the LAN but off its tailnet |
-| **Decode benchmark** | Multi-concurrency streaming decode tok/s (server + per-stream), persisted last run |
+| **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON); lab protocol (temp 0, thinking off); persisted last run |
 | **Prompt Showcase** | Full-page multi-terminal LLM streaming demo (up to 32 prompts) with live tok/s and copy-out |
 | **vLLM health** | KV cache %, run/wait queue, TTFT/E2E/ITL p95, preemptions, prefix cache, MTP accept from Prometheus `/metrics` |
 | **Multiple LLM ports** | Monitor several LLM servers on different ports simultaneously — each gets its own panel with independent backend detection and metrics |

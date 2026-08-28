@@ -786,7 +786,8 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
 /**
  * Decode throughput benchmark (streaming, post-first-token tok/s).
  *
- * POST body: { port?, concurrencies: number[], maxTokens? }
+ * POST body: { port?, concurrencies: number[], maxTokens?, promptType? }
+ * promptType is structured | prose | code | json (default structured).
  * Returns immediately with a bench job; poll GET for progress/results.
  */
 app.post("/api/sparks/:id/llm/bench", (req, res) => {
@@ -837,6 +838,7 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
       modelId,
       concurrencies: req.body?.concurrencies,
       maxTokens: req.body?.maxTokens,
+      promptType: req.body?.promptType,
       debug: benchDebug,
       apiKey: resolveLlmApiKey(spark, port),
       sampleHardware:

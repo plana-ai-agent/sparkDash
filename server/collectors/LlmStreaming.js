@@ -220,34 +220,52 @@ function extractDeltaPieces(choice) {
   return { answer, reasoning, tokenChunks };
 }
 
+/** Coerce a request/session thinking flag. Default is off (matches Showcase UI). */
+export function coerceThinkingFlag(raw) {
+  return raw === true || raw === "true" || raw === 1 || raw === "1";
+}
+
+function hasThinkingRequestFields(body) {
+  if (!body || typeof body !== "object") return false;
+  if (body.chat_template_kwargs && typeof body.chat_template_kwargs === "object") return true;
+  if ("enable_thinking" in body || "thinking" in body || "thinking_mode" in body) return true;
+  if ("reasoning_effort" in body || "reasoning_budget" in body) return true;
+  return false;
+}
+
 /**
  * Apply per-model thinking flags so reasoning models don't 400.
- * MiniMax-M3 needs `thinking_mode`; most others use `enable_thinking`.
+ * Hybrid models (Qwen3, GLM, MiniMax, …) default thinking ON unless we send
+ * disable flags — `enable_thinking` alone is ignored by MiniMax (`thinking_mode`).
  *
  * @param {Record<string, unknown>} body
  * @param {string | null | undefined} modelId
- * @param {boolean} [think=true]
+ * @param {boolean} [think=false]
  */
-export function applyThinkingFlags(body, modelId, think = true) {
+export function applyThinkingFlags(body, modelId, think = false) {
   if (!body || typeof body !== "object") return body;
-  const id = String(modelId || "").toLowerCase();
+  const on = Boolean(think);
+  void modelId;
   /** @type {Record<string, unknown>} */
   const ctk = {
     ...(body.chat_template_kwargs && typeof body.chat_template_kwargs === "object"
       ? body.chat_template_kwargs
       : {}),
-    enable_thinking: think,
+    enable_thinking: on,
+    // SGLang / some Qwen templates read `thinking` rather than `enable_thinking`.
+    thinking: on,
+    // MiniMax (M2 / M2.5 / M3) ignores enable_thinking; always send thinking_mode
+    // so a missing model id still disables reasoning.
+    thinking_mode: on ? "enabled" : "disabled",
   };
-  // MiniMax-M3 (and similarly named) use thinking_mode
-  if (id.includes("minimax") || /(^|[^a-z])m3([^a-z]|$)/.test(id)) {
-    ctk.thinking_mode = think ? "enabled" : "disabled";
-  }
   body.chat_template_kwargs = ctk;
   return body;
 }
 
 /**
- * Strip thinking-related request fields (for 400 retry).
+ * Strip thinking-related request fields (for 400 retry when *enabling* thinking
+ * on a model that does not accept those fields). Do not use this as a fallback
+ * when the user asked for thinking off — stripping lets the model default ON.
  * @param {Record<string, unknown>} body
  */
 export function stripThinkingFlags(body) {
@@ -256,10 +274,29 @@ export function stripThinkingFlags(body) {
     const ctk = { ...body.chat_template_kwargs };
     delete ctk.enable_thinking;
     delete ctk.thinking_mode;
+    delete ctk.thinking;
     if (Object.keys(ctk).length) body.chat_template_kwargs = ctk;
     else delete body.chat_template_kwargs;
   }
+  delete body.enable_thinking;
+  delete body.thinking;
+  delete body.thinking_mode;
+  delete body.reasoning_effort;
+  delete body.reasoning_budget;
   return body;
+}
+
+/**
+ * Alternate disable-only payload after HTTP 400 on the full thinking-flag set.
+ * Keeps an explicit off switch instead of stripping (which re-enables default thinking).
+ * @param {Record<string, unknown>} body
+ */
+export function thinkingOffFallbackBody(body) {
+  const next = stripThinkingFlags({ ...body });
+  next.chat_template_kwargs = { enable_thinking: false, thinking: false, thinking_mode: "disabled" };
+  next.thinking = { type: "disabled" };
+  next.enable_thinking = false;
+  return next;
 }
 
 /**
@@ -341,7 +378,10 @@ export async function pollServerGenerationRates(
  * - debug: capture compact HTTP/SSE debug trace
  * - collectContent: accumulate full visible text (showcase)
  * - onDelta: live callback `{ text?, answer?, reasoning?, tokenCount, tFirst, tLast, … }`
- * - retryOnThinking400: if HTTP 400 and body had thinking flags, retry once stripped
+ * - retryOnThinking400: if HTTP 400 and thinking was *enabled*, retry once stripped
+ *   (non-reasoning models). When thinking is off, retry with a smaller disable
+ *   payload instead of stripping — stripping lets hybrid models think by default.
+ * - thinking: whether the request intended reasoning on (default false)
  * - apiKey: optional Bearer token for OpenAI-compatible gateways
  */
 export async function runStreamingRequest(
@@ -353,6 +393,7 @@ export async function runStreamingRequest(
     collectContent = false,
     onDelta = null,
     retryOnThinking400 = false,
+    thinking = false,
     apiKey = null,
   } = {}
 ) {
@@ -367,11 +408,17 @@ export async function runStreamingRequest(
     retryOnThinking400 &&
     result.error &&
     /^HTTP 400\b/.test(result.error) &&
-    body &&
-    typeof body === "object" &&
-    body.chat_template_kwargs
+    hasThinkingRequestFields(body)
   ) {
-    const retryBody = stripThinkingFlags({ ...body, chat_template_kwargs: { ...body.chat_template_kwargs } });
+    const retryBody = coerceThinkingFlag(thinking)
+      ? stripThinkingFlags({
+          ...body,
+          chat_template_kwargs:
+            body.chat_template_kwargs && typeof body.chat_template_kwargs === "object"
+              ? { ...body.chat_template_kwargs }
+              : {},
+        })
+      : thinkingOffFallbackBody(body);
     return runStreamingRequestOnce(url, retryBody, signal, {
       debug,
       collectContent,

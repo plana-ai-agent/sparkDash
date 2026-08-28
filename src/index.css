@@ -1201,6 +1201,16 @@ input[type="checkbox"] {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.45rem;
 }
+.bench-type-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+.bench-type-grid .bench-conc-btn {
+  font-variant-numeric: normal;
+  font-size: 0.75rem;
+  padding: 0 0.35rem;
+}
 .bench-conc-btn {
   min-height: 2.25rem;
   border-radius: 0.5rem;
