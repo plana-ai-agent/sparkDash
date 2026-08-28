@@ -355,6 +355,44 @@ export interface LlmPosture {
   detail: string;
 }
 
+export type LocalLlmRuntime = "deepseek" | "qwen" | "glm" | "stopped" | "unknown";
+export type LocalLlmRuntimeKey = "deepseek" | "qwen" | "glm";
+export type LocalLlmSwitchState = "idle" | "switching" | "error";
+
+/** Deployment-configured display labels, served by the status endpoint. */
+export interface LocalLlmLabels {
+  deepseek: string;
+  qwen: string;
+  glm: string;
+}
+
+export interface LocalLlmSwitchStatus {
+  state: LocalLlmSwitchState;
+  phase:
+    | "idle"
+    | "stopping"
+    | "starting"
+    | "verifying"
+    | "rolling-back"
+    | "cleaning-up"
+    | "complete"
+    | "error";
+  current: LocalLlmRuntime;
+  currentModelId: string | null;
+  health: "healthy" | "stopped" | "unknown";
+  source: "deepseek" | "qwen" | "glm" | null;
+  target: "deepseek" | "qwen" | "glm" | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  message: string;
+  error: string | null;
+  rollback: { attempted: boolean; succeeded: boolean; error: string | null } | null;
+  failureLog: string[];
+  log: string[];
+  writesEnabled: boolean;
+  labels?: LocalLlmLabels;
+}
+
 // ─── ComfyUI metrics ─────────────────────────────────────
 /** Active or queued ComfyUI job (parsed from /queue prompt graph). */
 export interface ComfyJob {

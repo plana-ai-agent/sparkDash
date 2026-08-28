@@ -260,7 +260,7 @@ docker compose -f docker-compose.dev.yml up --build
 - ${HOME}/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
 ```
 
-If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as** `id_ed25519`, or set `SSH_IDENTITY_FILE` to the path inside the container. Keep the file mode `600`. The unit that runs sparkDash itself should be added with **This host (local collectors — no SSH for metrics)**.
+If the key file has a non-default name (e.g. `id_ed25519_shared`), mount it **as** `id_ed25519`, or set `SSH_IDENTITY_FILE` to the path inside the container. Keep the file mode `600`. The unit that runs sparkDash itself should be added with **This host (local collectors — no SSH for metrics)**. The shipped `docker-compose.yml` instead reads the host-side key path from `SPARKDASH_SSH_KEY` in `.env` (gitignored), so no key filename is committed.
 
 ---
 
@@ -402,6 +402,18 @@ Copy `.env.example` to `.env` if needed:
 | `HOST_SYS_PATH` | `/host/sys` | Host sys mount |
 | `HOST_ROOT_PATH` | `/host/root` | Host root mount |
 | `SSH_IDENTITY_FILE` | _(unset)_ | Path **inside the process** to a private key (`ssh -i`). Use when the bind-mount is not a default OpenSSH name. |
+| `SPARKDASH_SSH_KEY` | _(unset)_ | Docker only: **host** path of the SSH key bind-mounted for remote-unit key auth (volume source in `docker-compose.yml`). |
+| `LOCAL_LLM_HOST_USER` | _(required)_ | Host user that owns the Local LLM runtime scripts (runuser target on the dashboard host). |
+| `LOCAL_LLM_HOST_HOME` | _(required)_ | Home directory passed as `HOME`/`USER`/`LOGNAME` into the runtime command shell. |
+| `LOCAL_LLM_MODEL_DEEPSEEK` / `_QWEN` / `_GLM` | _(required)_ | Exact model IDs as reported by each runtime's `/v1/models` endpoint; the panel classifies health by these. |
+| `LOCAL_LLM_LABEL_DEEPSEEK` / `_QWEN` / `_GLM` | `DeepSeek` / `Qwen` / `GLM` | Optional display labels shown in the runtime panel (served via the status API — no rebuild needed). |
+| `LOCAL_LLM_CMD_START_DEEPSEEK` / `CMD_STOP_DEEPSEEK` | _(required)_ | Allowlisted host lifecycle commands (same for `_QWEN` / `_GLM`). Executed on the dashboard host via `nsenter`; nothing else can be run. |
+| `LOCAL_LLM_CMD_PATH` | derived | `PATH` passed to the runtime command shell. |
+| `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` | _(empty)_ | Comma-separated targets from `{deepseek,qwen,glm}` that skip auto-rollback on failed switches. |
+
+> The Local LLM runtime panel requires these values in `.env` (gitignored). When any is
+> missing the dashboard keeps running, but `/api/local-llm/*` answers with a configuration
+> error instead of starting or stopping runtimes.
 
 > The listener defaults to `127.0.0.1` (loopback) so the dashboard — which can SSH into and
 > power off your Sparks — isn't reachable on the LAN by default. Set `BIND_HOST` to the host's

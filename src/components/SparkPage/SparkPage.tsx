@@ -4,12 +4,14 @@ import { isLlmMonitoringEnabled } from "../../api/sparkRole";
 import { updateSpark, refreshSparkMetric, addLlmPort, removeLlmPort } from "../../api/client";
 import { SparkHeader } from "./SparkHeader";
 import { SparkActions } from "./SparkActions";
+import { EcoControl } from "./EcoControl";
 import { GpuPanel } from "./GpuPanel";
 import { RamPanel } from "./RamPanel";
 import { StoragePanel } from "./StoragePanel";
 import { NetworkPanel } from "./NetworkPanel";
 import { TailscalePanel } from "./TailscalePanel";
 import { LlmPanel } from "./LlmPanel";
+import { LocalLlmControl } from "./LocalLlmControl";
 import { ComfyPanel } from "./ComfyPanel";
 import { ChevronDownIcon } from "../ui/icons";
 
@@ -175,11 +177,12 @@ export function SparkPage({ spark, temperatureUnit, onEdit }: SparkPageProps) {
   }, [spark.id]);
 
   const llmOn = isLlmMonitoringEnabled(spark);
+  const showRuntimeControl = Boolean(spark.isLocal && spark.role === "head");
   const comfyOn = Boolean(spark.comfyMonitoring);
   const tailscaleOn = Boolean(spark.tailscaleMonitoring);
   /** First LLM + Comfy share a row when both are on. */
   const primarySideBySide = llmOn && comfyOn;
-  const showServices = llmOn || comfyOn;
+  const showServices = showRuntimeControl || llmOn || comfyOn;
   const primaryPort = llmPorts[0];
   const extraPorts = llmPorts.slice(1);
 
@@ -214,6 +217,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit }: SparkPageProps) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
       <SparkHeader spark={spark} onEdit={onEdit} />
+      <EcoControl sparkId={spark.id} />
       {/* Mobile-only action row (Update Hermes / Shutdown·Wake / Edit) — desktop keeps them in the header. */}
       <SparkActions
         spark={spark}
@@ -305,6 +309,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit }: SparkPageProps) {
         )}
         {showServices && servicesOpen && (
           <>
+            {showRuntimeControl && <LocalLlmControl />}
             {llmOn &&
               primaryPort != null &&
               renderLlmPanel(

@@ -33,12 +33,15 @@ services:
       - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
       # Config + encrypted secrets (passwords survive restarts)
       - ./config:/app/config
-      # Remote Sparks with SSH *key* auth: OpenSSH inside the container uses
-      # /root/.ssh (not the host user's ~/.ssh). Uncomment and point at a
-      # default-named key (id_ed25519 / id_rsa). A custom name like
-      # id_ed25519_shared must be mounted *as* id_ed25519, or set
-      # SSH_IDENTITY_FILE to the path inside the container.
-      # - ${HOME}/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro
+      # Remote Spark key auth. Mount only the dedicated key and known_hosts;
+      # never expose the full host ~/.ssh directory to this privileged container.
+      # The host-side key path is set in .env (SPARKDASH_SSH_KEY, gitignored).
+      - ${SPARKDASH_SSH_KEY:?set SPARKDASH_SSH_KEY in .env}:/run/secrets/sparkdash_id_ed25519:ro
+      - ${HOME}/.ssh/known_hosts:/root/.ssh/known_hosts:ro
+    # Deployment-private values (LOCAL_LLM_* runtime config) come from .env;
+    # explicit environment: entries below keep precedence over it.
+    env_file:
+      - .env
     environment:
       - BIND_HOST=0.0.0.0
       - PORT=5555
@@ -47,3 +50,4 @@ services:
       - HOST_PROC_PATH=/host/proc
       - HOST_SYS_PATH=/host/sys
       - HOST_ROOT_PATH=/host/root
+      - SSH_IDENTITY_FILE=/run/secrets/sparkdash_id_ed25519

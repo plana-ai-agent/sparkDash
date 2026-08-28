@@ -5,6 +5,7 @@ import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/cli
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
+import { EcoControl } from "../SparkPage/EcoControl";
 
 interface OverviewPageProps {
   sparks: SparkSnapshot[];
@@ -570,6 +571,7 @@ export function OverviewPage({ sparks, hideOffline = false, temperatureUnit = "c
           )}
           {sparks.length > 0 && (
             <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <EcoControl fleet compact />
               {hermesMonitoredCount > 0 && (
                 <button
                   type="button"
