@@ -95,8 +95,8 @@ export function ingestSnapshots(sparks: SparkSnapshot[]): void {
     }
     if (m.cpu) {
       pushHistory(`${s.id}:cpu.usage`, m.cpu.usage);
-      // CPU temp is only shown for dedicated GPU hosts (not DGX Sparks).
-      if (s.kind === "host" && m.cpu.temperature > 0) {
+      // Skip 0°C so a missing sensor does not draw a fake floor on the sparkline.
+      if (m.cpu.temperature > 0) {
         pushHistory(`${s.id}:cpu.temp`, m.cpu.temperature);
       }
     }

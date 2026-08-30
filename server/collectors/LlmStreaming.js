@@ -115,21 +115,23 @@ export async function readServerGenerationTokens(baseUrl, opts = {}) {
     /* try next */
   }
 
-  // SGLang
-  try {
-    const res = await fetch(`${baseUrl}/get_server_info`, {
-      signal: AbortSignal.timeout(5_000),
-      headers,
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data?.total_output_tokens != null) {
-        const v = Number(data.total_output_tokens);
-        if (Number.isFinite(v)) return v;
+  // SGLang — current /server_info first; /get_server_info is a deprecated alias.
+  for (const path of ["/server_info", "/get_server_info"]) {
+    try {
+      const res = await fetch(`${baseUrl}${path}`, {
+        signal: AbortSignal.timeout(5_000),
+        headers,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.total_output_tokens != null) {
+          const v = Number(data.total_output_tokens);
+          if (Number.isFinite(v)) return v;
+        }
       }
+    } catch {
+      /* try next */
     }
-  } catch {
-    /* ignore */
   }
 
   return null;

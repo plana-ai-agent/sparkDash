@@ -97,7 +97,7 @@ function buildShareText(job: DecodeBenchJob, modelId: string | null): string {
     .map((r) => {
       if (r.totalDecodeTokens > 0 || r.totalCompletionTokens > 0) {
         const agg = r.aggregateDecodeTps > 0 ? r.aggregateDecodeTps : r.meanDecodeTps;
-        return `×${r.concurrency}  ${agg.toFixed(0)} agg  ${r.meanDecodeTps.toFixed(0)}/str  · TTFT ${formatTtft(r.medianTtftMs)}`;
+        return `×${r.concurrency}  ${agg.toFixed(1)} agg  ${r.meanDecodeTps.toFixed(1)}/str  · TTFT ${formatTtft(r.meanTtftMs)}`;
       }
       return `×${r.concurrency}  failed${r.error ? ` — ${r.error}` : ""}`;
     });

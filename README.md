@@ -507,7 +507,7 @@ Each configured LLM port gets its own `LlmProbe` instance running in parallel. P
 
 - **llama.cpp** — `/slots` for live decode rates; model from `/props`
 - **ds4-server** (Entrpi/ds4-on-spark) — `/v1/models` (`owned_by: ds4.c`) + Prometheus `ds4_*` token counters for live tok/s
-- **vLLM / sglang** — `/v1/models`; sglang via `/get_server_info` (`last_gen_throughput` when metrics off), vLLM via Prometheus `/metrics` counters (scientific notation supported)
+- **vLLM / sglang** — `/v1/models`; sglang via `/server_info` (`last_gen_throughput` when metrics off; `/get_server_info` fallback), vLLM via Prometheus `/metrics` counters (scientific notation supported)
 
 Rates are derived from per-probe cumulative counter diffs (or SGLang sticky throughput while it moves). Multiple ports can be added or removed at runtime without restarting the monitor.
 

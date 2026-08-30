@@ -228,13 +228,17 @@ function SparkCard({
               );
             })()}
             <MetricBar
-              label={spark.kind === "host" ? "GPU" : "Temperature"}
+              label={
+                spark.kind === "host" || (spark.metrics.cpu?.temperature ?? 0) > 0
+                  ? "GPU"
+                  : "Temperature"
+              }
               value={displayTemp}
               max={temperatureUnit === "fahrenheit" ? 212 : 100}
               color={tempBarColor}
               caption={tempLabel}
             />
-            {spark.kind === "host" && (spark.metrics.cpu?.temperature ?? 0) > 0 && (() => {
+            {(spark.metrics.cpu?.temperature ?? 0) > 0 && (() => {
               const cpuRaw = spark.metrics.cpu?.temperature ?? 0;
               const cpuDisplay =
                 temperatureUnit === "fahrenheit" ? celsiusToFahrenheit(cpuRaw) : cpuRaw;

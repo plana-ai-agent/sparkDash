@@ -5,6 +5,38 @@ import { SystemCollector } from "../SystemCollector.js";
 const c = Object.create(SystemCollector.prototype);
 const parse = (raw) => c._parseSensorTemp(raw);
 
+test("remote CPU command always includes the sensor dump", () => {
+  const spark = new SystemCollector({ id: "spark-test", kind: "spark" });
+  const host = new SystemCollector({ id: "host-test", kind: "host" });
+  const sparkCmd = spark._buildRemoteCpuCommand();
+  const hostCmd = host._buildRemoteCpuCommand();
+  assert.equal(sparkCmd, hostCmd);
+  assert.match(sparkCmd, /coretemp\|k10temp\|zenpower\|acpitz/);
+  assert.match(sparkCmd, /thermal_zone\*\/temp/);
+  assert.match(sparkCmd, /\|\| true$/);
+  assert.equal((sparkCmd.match(/echo '---'/g) || []).length, 2);
+});
+
+test("remote CPU collection returns temperature for DGX Spark nodes", async () => {
+  const collector = new SystemCollector({ id: "spark-test", kind: "spark" });
+  const result = await collector._getRemoteCpu(async (spark, command) => {
+    assert.equal(spark.id, "spark-test");
+    assert.match(command, /coretemp\|k10temp\|zenpower\|acpitz/);
+    assert.match(command, /thermal_zone\*\/temp/);
+    assert.equal((command.match(/echo '---'/g) || []).length, 2);
+    return [
+      "cpu 100 0 40 860 0 0 0 0",
+      "---",
+      "CPU architecture: 8",
+      "---",
+      "70900",
+    ].join("\n");
+  });
+
+  assert.equal(result.temperature, 70.9);
+  assert.equal(result.tdp, 65);
+});
+
 test("converts millidegrees to Celsius", () => {
   assert.equal(parse("70900"), 70.9);
   assert.equal(parse("69200"), 69.2);

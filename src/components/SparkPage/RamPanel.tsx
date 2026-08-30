@@ -25,7 +25,7 @@ function celsiusToFahrenheit(c: number): number {
 /**
  * System RAM panel — shown for non-Spark GPU hosts, where RAM (system memory)
  * and VRAM (discrete GPU memory) are separate things. CPU temperature lives
- * here because Sparks do not show a CPU panel.
+ * here for hosts; Spark pages show it on the GPU panel.
  */
 export function RamPanel({ ram, cpu, sparkId, temperatureUnit, className }: RamPanelProps) {
   const history = useMetricsHistoryTail(sparkId, "ram.percentage");

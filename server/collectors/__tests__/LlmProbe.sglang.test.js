@@ -67,6 +67,81 @@ test("_probeIsSglang: true when /get_server_info returns JSON object", async () 
   assert.equal(await probe._probeIsSglang(), true);
 });
 
+test("_probeIsSglang: prefers /server_info and skips deprecated /get_server_info", async () => {
+  const probe = new LlmProbe({ lanIp: "127.0.0.1" }, 30000);
+  const hits = [];
+  probe._fetch = async (url) => {
+    const u = String(url);
+    hits.push(u.slice(u.lastIndexOf("/")));
+    if (u.endsWith("/server_info")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ version: "0.5.0", model_path: "org/model" }),
+      };
+    }
+    if (u.endsWith("/get_server_info")) {
+      assert.fail("must not call deprecated /get_server_info when /server_info works");
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  assert.equal(await probe._probeIsSglang(), true);
+  assert.deepEqual(hits, ["/server_info"]);
+});
+
+test("probe: prefers /server_info and /model_info over deprecated aliases", async () => {
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000);
+  probe.serverIsOpenAI = true;
+  probe.backendType = "sglang";
+  probe.authOpen = true;
+  probe._lastDetectAt = Date.now();
+  probe.lastProbeTime = Date.now() - 2000;
+  const hits = [];
+  probe._fetch = async (url) => {
+    const u = String(url);
+    const path = u.slice(u.lastIndexOf("/"));
+    hits.push(path);
+    if (u.endsWith("/v1/models")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{ id: "org/model", owned_by: "sglang", max_model_len: 8192 }],
+        }),
+      };
+    }
+    if (u.endsWith("/server_info")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model_path: "org/model",
+          context_length: 8192,
+          internal_states: [{ last_gen_throughput: 0 }],
+        }),
+      };
+    }
+    if (u.endsWith("/model_info")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ model_path: "org/ShortName" }),
+      };
+    }
+    if (u.endsWith("/get_server_info") || u.endsWith("/get_model_info")) {
+      assert.fail(`must not call deprecated ${path} when current endpoints work`);
+    }
+    return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
+  };
+  const snap = await probe.probe();
+  assert.equal(snap.backend, "sglang");
+  assert.equal(snap.modelId, "org/ShortName");
+  assert.equal(hits.includes("/get_server_info"), false);
+  assert.equal(hits.includes("/get_model_info"), false);
+  assert.equal(hits.includes("/server_info"), true);
+  assert.equal(hits.includes("/model_info"), true);
+});
+
 test("_probeIsSglang: false when endpoints missing", async () => {
   const probe = new LlmProbe({ lanIp: "127.0.0.1" }, 8000);
   probe._fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
