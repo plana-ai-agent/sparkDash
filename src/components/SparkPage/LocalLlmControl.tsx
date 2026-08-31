@@ -10,7 +10,7 @@ import { BotIcon } from "../ui/icons";
 const CONTROL_KEY_STORAGE = "sparkdash.eco.key";
 const STATUS_POLL_MS = 2000;
 
-type Target = "deepseek" | "qwen" | "glm";
+type Target = "deepseek" | "qwen" | "glm" | "nvfp4";
 
 // Fallbacks for before the first status poll resolves; the status endpoint
 // serves the deployment-configured labels (LOCAL_LLM_LABEL_* in .env).
@@ -18,9 +18,10 @@ const FALLBACK_LABELS: LocalLlmLabels = {
   deepseek: "DeepSeek",
   qwen: "Qwen",
   glm: "GLM",
+  nvfp4: "GLM NVFP4",
 };
 
-const TARGET_KEYS: Target[] = ["deepseek", "qwen", "glm"];
+const TARGET_KEYS: Target[] = ["deepseek", "qwen", "glm", "nvfp4"];
 
 function readStoredKey() {
   try {
@@ -77,7 +78,12 @@ export function LocalLlmControl() {
     setStatus(next);
     setLoadError(null);
     if (!targetInitialized.current) {
-      if (next.current === "deepseek" || next.current === "qwen" || next.current === "glm")
+      if (
+        next.current === "deepseek" ||
+        next.current === "qwen" ||
+        next.current === "glm" ||
+        next.current === "nvfp4"
+      )
         setTarget(next.current);
       targetInitialized.current = true;
     }

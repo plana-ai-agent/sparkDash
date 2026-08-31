@@ -405,11 +405,11 @@ Copy `.env.example` to `.env` if needed:
 | `SPARKDASH_SSH_KEY` | _(unset)_ | Docker only: **host** path of the SSH key bind-mounted for remote-unit key auth (volume source in `docker-compose.yml`). |
 | `LOCAL_LLM_HOST_USER` | _(required)_ | Host user that owns the Local LLM runtime scripts (runuser target on the dashboard host). |
 | `LOCAL_LLM_HOST_HOME` | _(required)_ | Home directory passed as `HOME`/`USER`/`LOGNAME` into the runtime command shell. |
-| `LOCAL_LLM_MODEL_DEEPSEEK` / `_QWEN` / `_GLM` | _(required)_ | Exact model IDs as reported by each runtime's `/v1/models` endpoint; the panel classifies health by these. |
-| `LOCAL_LLM_LABEL_DEEPSEEK` / `_QWEN` / `_GLM` | `DeepSeek` / `Qwen` / `GLM` | Optional display labels shown in the runtime panel (served via the status API — no rebuild needed). |
-| `LOCAL_LLM_CMD_START_DEEPSEEK` / `CMD_STOP_DEEPSEEK` | _(required)_ | Allowlisted host lifecycle commands (same for `_QWEN` / `_GLM`). Executed on the dashboard host via `nsenter`; nothing else can be run. |
+| `LOCAL_LLM_MODEL_DEEPSEEK` / `_QWEN` / `_GLM` / `_NVFP4` | _(required)_ | Exact model IDs as reported by each runtime's `/v1/models` endpoint; the panel classifies health by these. |
+| `LOCAL_LLM_LABEL_DEEPSEEK` / `_QWEN` / `_GLM` / `_NVFP4` | `DeepSeek` / `Qwen` / `GLM` / `GLM NVFP4` | Optional display labels shown in the runtime panel (served via the status API — no rebuild needed). |
+| `LOCAL_LLM_CMD_START_DEEPSEEK` / `CMD_STOP_DEEPSEEK` | _(required)_ | Allowlisted host lifecycle commands (same for `_QWEN` / `_GLM` / `_NVFP4`). Executed on the dashboard host via `nsenter`; nothing else can be run. |
 | `LOCAL_LLM_CMD_PATH` | derived | `PATH` passed to the runtime command shell. |
-| `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` | _(empty)_ | Comma-separated targets from `{deepseek,qwen,glm}` that skip auto-rollback on failed switches. |
+| `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` | _(empty)_ | Comma-separated targets from `{deepseek,qwen,glm,nvfp4}` that skip auto-rollback on failed switches. |
 
 > The Local LLM runtime panel requires these values in `.env` (gitignored). When any is
 > missing the dashboard keeps running, but `/api/local-llm/*` answers with a configuration
