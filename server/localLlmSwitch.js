@@ -7,7 +7,7 @@ import { spawn } from "child_process";
  * and the public product labels are fixed here, so the API contract and
  * the tests stay independent of any deployment.
  */
-const TARGET_KEYS = Object.freeze(["deepseek", "qwen", "glm", "nvfp4"]);
+const TARGET_KEYS = Object.freeze(["deepseek", "qwen", "glm"]);
 
 // Neutral fallbacks derived from the structural runtime keys. Deployment
 // profiles override these via LOCAL_LLM_LABEL_* in .env.
@@ -15,7 +15,6 @@ const TARGET_LABEL_FALLBACKS = Object.freeze({
   deepseek: "DeepSeek",
   qwen: "Qwen",
   glm: "GLM",
-  nvfp4: "GLM NVFP4",
 });
 
 export function loadLocalLlmRuntimeConfig(env = process.env) {
@@ -83,7 +82,7 @@ export function parseRollbackDisabledTargets(rawValue) {
 
 export function validateLocalLlmTarget(value) {
   if (!TARGET_KEYS.includes(value)) {
-    throw new Error(`target must be one of: ${TARGET_KEYS.join(", ")}`);
+    throw new Error("target must be deepseek, qwen, or glm");
   }
   return value;
 }

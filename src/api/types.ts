@@ -355,8 +355,8 @@ export interface LlmPosture {
   detail: string;
 }
 
-export type LocalLlmRuntime = "deepseek" | "qwen" | "glm" | "nvfp4" | "stopped" | "unknown";
-export type LocalLlmRuntimeKey = "deepseek" | "qwen" | "glm" | "nvfp4";
+export type LocalLlmRuntime = "deepseek" | "qwen" | "glm" | "stopped" | "unknown";
+export type LocalLlmRuntimeKey = "deepseek" | "qwen" | "glm";
 export type LocalLlmSwitchState = "idle" | "switching" | "error";
 
 /** Deployment-configured display labels, served by the status endpoint. */
@@ -364,7 +364,6 @@ export interface LocalLlmLabels {
   deepseek: string;
   qwen: string;
   glm: string;
-  nvfp4: string;
 }
 
 export interface LocalLlmSwitchStatus {
@@ -381,8 +380,8 @@ export interface LocalLlmSwitchStatus {
   current: LocalLlmRuntime;
   currentModelId: string | null;
   health: "healthy" | "stopped" | "unknown";
-  source: LocalLlmRuntimeKey | null;
-  target: LocalLlmRuntimeKey | null;
+  source: "deepseek" | "qwen" | "glm" | null;
+  target: "deepseek" | "qwen" | "glm" | null;
   startedAt: number | null;
   finishedAt: number | null;
   message: string;

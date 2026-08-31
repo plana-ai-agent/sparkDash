@@ -20,10 +20,8 @@ const FIXTURE_ENV = {
   LOCAL_LLM_MODEL_DEEPSEEK: "fixture-deepseek-model",
   LOCAL_LLM_MODEL_QWEN: "fixture-qwen-model",
   LOCAL_LLM_MODEL_GLM: "fixture-glm-model",
-  LOCAL_LLM_MODEL_NVFP4: "fixture-nvfp4-model",
   LOCAL_LLM_LABEL_DEEPSEEK: "Fixture DeepSeek Label",
   LOCAL_LLM_LABEL_GLM: "Fixture GLM Label",
-  LOCAL_LLM_LABEL_NVFP4: "Fixture NVFP4 Label",
   LOCAL_LLM_CMD_STOP_DEEPSEEK: "cd /opt/sparkdash-fixtures/deepseek && exec ./stop.sh",
   LOCAL_LLM_CMD_START_DEEPSEEK: "cd /opt/sparkdash-fixtures/deepseek && exec ./start.sh",
   LOCAL_LLM_CMD_STOP_QWEN: "cd /opt/sparkdash-fixtures/qwen && exec ./start.sh stop",
@@ -32,8 +30,6 @@ const FIXTURE_ENV = {
     "cd /opt/sparkdash-fixtures/glm && exec env WORKER_SSH=fixture-worker CONTAINER_HEAD=fixture-head CONTAINER_WORKER=fixture-worker ./stop.sh",
   LOCAL_LLM_CMD_START_GLM:
     "cd /opt/sparkdash-fixtures/glm && exec env HEAD_IP=10.0.0.10 WORKER_SSH=fixture-worker WORKER_IP=10.0.0.11 ./start.sh",
-  LOCAL_LLM_CMD_STOP_NVFP4: "cd /opt/sparkdash-fixtures/nvfp4 && exec ./runtime.sh stop",
-  LOCAL_LLM_CMD_START_NVFP4: "cd /opt/sparkdash-fixtures/nvfp4 && exec ./runtime.sh start",
 };
 for (const [name, value] of Object.entries(FIXTURE_ENV)) {
   process.env[name] = value;
@@ -42,7 +38,6 @@ for (const [name, value] of Object.entries(FIXTURE_ENV)) {
 const DEEPSEEK_ID = FIXTURE_ENV.LOCAL_LLM_MODEL_DEEPSEEK;
 const QWEN_ID = FIXTURE_ENV.LOCAL_LLM_MODEL_QWEN;
 const GLM_ID = FIXTURE_ENV.LOCAL_LLM_MODEL_GLM;
-const NVFP4_ID = FIXTURE_ENV.LOCAL_LLM_MODEL_NVFP4;
 
 function reachable(modelId) {
   return { reachable: true, modelId };
@@ -154,11 +149,6 @@ test("classifyProbe distinguishes all exact IDs, stopped, and unknown", () => {
     modelId: GLM_ID,
     health: "healthy",
   });
-  assert.deepEqual(classifyProbe(reachable(NVFP4_ID), targets), {
-    runtime: "nvfp4",
-    modelId: NVFP4_ID,
-    health: "healthy",
-  });
   assert.deepEqual(classifyProbe(stopped(), targets), {
     runtime: "stopped",
     modelId: null,
@@ -204,17 +194,15 @@ test("label overrides come from the environment with neutral fallbacks", () => {
   assert.equal(labels.deepseek.label, "Fixture DeepSeek Label");
   assert.equal(labels.qwen.label, "Qwen");
   assert.equal(labels.glm.label, "Fixture GLM Label");
-  assert.equal(labels.nvfp4.label, "Fixture NVFP4 Label");
   assert.equal(labels.deepseek.modelId, "fixture-deepseek-model");
 });
 
-test("target validation admits only the fixed runtime enum", () => {
+test("target validation admits only the fixed deepseek, qwen, and glm enum", () => {
   assert.equal(validateLocalLlmTarget("deepseek"), "deepseek");
   assert.equal(validateLocalLlmTarget("qwen"), "qwen");
   assert.equal(validateLocalLlmTarget("glm"), "glm");
-  assert.equal(validateLocalLlmTarget("nvfp4"), "nvfp4");
   for (const value of ["", "GLM", "fixture-glm-model", "deepseek; rm -rf /", null, 3]) {
-    assert.throws(() => validateLocalLlmTarget(value), /target must be one of/);
+    assert.throws(() => validateLocalLlmTarget(value), /target must be deepseek, qwen, or glm/);
   }
 });
 
