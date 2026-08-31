@@ -260,8 +260,8 @@ test("llama.cpp probe: slot deltas → tok/s; props for model", async () => {
   assert.equal(snap.contextLength, 32768);
   assert.equal(snap.slotsTotal, 1);
   assert.equal(snap.slotsActive, 1);
-  assert.equal(snap.generationTps, 20); // (50-10)/2
-  assert.equal(snap.prefillTps, 10); // (25-5)/2
+  assert.ok(Math.abs(snap.generationTps - 20) <= 0.1); // (50-10)/~2s
+  assert.ok(Math.abs(snap.prefillTps - 10) <= 0.1); // (25-5)/~2s
   assert.equal(snap.totalOutputTokens, 50);
   assert.equal(snap.available, true);
   assert.equal(snap.cachedPrefillTps, null);
