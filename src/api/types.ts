@@ -723,6 +723,64 @@ export interface StartDecodeBenchRequest {
   promptType?: DecodeBenchPromptType;
 }
 
+// ─── LLM prefill benchmark ───────────────────────────────
+export interface PrefillBenchConfig {
+  port: number;
+  modelId: string | null;
+  contextSizes: number[];
+}
+
+export interface PrefillBenchSizeResult {
+  targetTokens: number;
+  promptTokens: number;
+  promptChars: number;
+  prefillTps: number;
+  ttftMs: number;
+  ttftContentMs: number | null;
+  completionTokens: number;
+  durationMs: number;
+  model: string | null;
+  error: string | null;
+}
+
+export interface PrefillBenchProgress {
+  currentContext: number | null;
+  completedLevels: number;
+  totalLevels: number;
+  message: string;
+}
+
+export interface PrefillBenchJob {
+  benchId: string;
+  sparkId: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  startedAt: number;
+  completedAt: number | null;
+  config: PrefillBenchConfig;
+  progress: PrefillBenchProgress;
+  results: PrefillBenchSizeResult[];
+  error: string | null;
+  durationMs: number;
+}
+
+export interface PrefillBenchDefaults {
+  allowedContextSizes: number[];
+  defaultContextSizes: number[];
+}
+
+export interface PrefillBenchListResponse {
+  active: PrefillBenchJob | null;
+  last: PrefillBenchJob | null;
+  history: PrefillBenchJob[];
+  defaults: PrefillBenchDefaults;
+}
+
+export interface StartPrefillBenchRequest {
+  port?: number;
+  contextSizes: number[];
+  modelId?: string | null;
+}
+
 // ─── LLM Prompt Showcase ─────────────────────────────────
 export type ShowcasePromptType = "structural" | "text" | "mixed";
 

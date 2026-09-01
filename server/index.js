@@ -19,6 +19,10 @@ import {
   decodeBenchManager,
   DECODE_BENCH_DEFAULTS,
 } from "./collectors/DecodeBench.js";
+import {
+  prefillBenchManager,
+  PREFILL_BENCH_DEFAULTS,
+} from "./collectors/PrefillBench.js";
 import { showcaseManager } from "./collectors/ShowcaseManager.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
 import { llmDaily } from "./collectors/LlmDaily.js";
@@ -802,6 +806,9 @@ app.post("/api/sparks/:id/llm/bench", (req, res) => {
   if (showcaseManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A prompt showcase is already running for this Spark" });
   }
+  if (prefillBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A prefill benchmark is already running for this Spark" });
+  }
 
   const monitor = monitors.get(req.params.id);
   const ports = Array.isArray(spark.llmPorts) && spark.llmPorts.length
@@ -938,6 +945,127 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
   const job = decodeBenchManager.cancel(spark.id, req.params.benchId);
+  if (!job) return res.status(404).json({ error: "Benchmark not found" });
+  res.json(job);
+});
+
+/**
+ * Prefill throughput + TTFT at selected context sizes (up to 300k).
+ *
+ * POST body: { port?, contextSizes: number[] }
+ * Returns 202 job; poll GET for progress/results.
+ */
+app.post("/api/sparks/:id/llm/prefill-bench", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  if (spark.workerNode) {
+    return res.status(400).json({ error: "Worker nodes do not expose a local LLM API" });
+  }
+  if (spark.llmMonitoring === false) {
+    return res.status(400).json({ error: "LLM monitoring is disabled for this Spark" });
+  }
+  if (showcaseManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A prompt showcase is already running for this Spark" });
+  }
+  if (decodeBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A decode benchmark is already running for this Spark" });
+  }
+
+  const monitor = monitors.get(req.params.id);
+  const ports = Array.isArray(spark.llmPorts) && spark.llmPorts.length
+    ? spark.llmPorts
+    : [resolveLlmPort(spark)];
+
+  let port = req.body?.port != null ? Number(req.body.port) : ports[0];
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return res.status(400).json({ error: "Invalid port" });
+  }
+  if (!ports.includes(port)) {
+    return res.status(400).json({ error: "port is not configured for this Spark" });
+  }
+
+  let modelId = req.body?.modelId || null;
+  if (!modelId && monitor) {
+    const snap = monitor.snapshot();
+    const llmList = Array.isArray(snap?.metrics?.llm) ? snap.metrics.llm : [];
+    const portIndex = ports.indexOf(port);
+    const llm =
+      (portIndex >= 0 ? llmList[portIndex] : null) ||
+      llmList.find((m) => m?.available) ||
+      llmList[0];
+    modelId = llm?.modelId || null;
+  }
+
+  try {
+    const job = prefillBenchManager.start({
+      sparkId: spark.id,
+      lanIp: llmProbeHost(spark),
+      port,
+      modelId,
+      contextSizes: req.body?.contextSizes,
+      apiKey: resolveLlmApiKey(spark, port),
+    });
+    res.status(202).json(job);
+  } catch (err) {
+    const status = err.status || 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.get("/api/sparks/:id/llm/prefill-bench", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const active = prefillBenchManager.getActive(spark.id);
+  const history = prefillBenchManager.getHistory(spark.id);
+  const portRaw = req.query.port;
+  const port =
+    portRaw != null && portRaw !== ""
+      ? parseInt(String(portRaw), 10)
+      : null;
+  const last = prefillBenchManager.getLast(
+    spark.id,
+    Number.isInteger(port) ? port : null
+  );
+  res.json({
+    active,
+    last,
+    history,
+    defaults: PREFILL_BENCH_DEFAULTS,
+  });
+});
+
+app.delete("/api/sparks/:id/llm/prefill-bench", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  if (prefillBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "Cannot clear history while a benchmark is running" });
+  }
+  const portRaw = req.query.port ?? req.body?.port;
+  const port =
+    portRaw != null && portRaw !== ""
+      ? parseInt(String(portRaw), 10)
+      : null;
+  prefillBenchManager.clearHistory(
+    spark.id,
+    Number.isInteger(port) ? port : null
+  );
+  res.json({ success: true });
+});
+
+app.get("/api/sparks/:id/llm/prefill-bench/:benchId", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const job = prefillBenchManager.getJob(req.params.benchId);
+  if (!job || job.sparkId !== spark.id) {
+    return res.status(404).json({ error: "Benchmark not found" });
+  }
+  res.json(job);
+});
+
+app.delete("/api/sparks/:id/llm/prefill-bench/:benchId", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const job = prefillBenchManager.cancel(spark.id, req.params.benchId);
   if (!job) return res.status(404).json({ error: "Benchmark not found" });
   res.json(job);
 });
@@ -1464,6 +1592,9 @@ function shutdown(signal) {
     // Finalize in-flight benches before the process dies so clients polling
     // GET /llm/bench/:id do not hit "Benchmark not found" after --watch reload.
     decodeBenchManager.interruptAll(
+      "Interrupted — server restarted while the benchmark was running"
+    );
+    prefillBenchManager.interruptAll(
       "Interrupted — server restarted while the benchmark was running"
     );
   } catch (err) {

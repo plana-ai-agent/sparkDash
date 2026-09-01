@@ -9,10 +9,16 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+---
+
+## [1.8.6] — 2026-09-01
+
 ### Added
+- **Prefill benchmark** — sequential context-size sweep (1k–300k) measuring prefill tok/s (`prompt_tokens` ÷ TTFT) and TTFT. Unique prefix per size so prefix-cache does not inflate later runs. Button on the LLM card; persisted last run. Per-size timeout scales with context (90s floor, ~8 ms/token, 45 min cap).
 - **DGX Spark CPU temperature** — remote Sparks collect CPU temp over SSH with the same hwmon allowlist as hosts (`acpitz` / `coretemp` / `k10temp` / `zenpower`; NVMe / CX7 filtered out). Overview shows a CPU bar and Spark pages show a CPU row on the GPU panel when the reading is above 0°C.
 
 ### Fixed
+- **Prefill bench 256k timeout** — per-size cap was 12 minutes (`~3 ms/token`); slow prefills aborted before first token. Now ~8 ms/token with a 45 minute cap, and the error names the limit.
 - **Copy results tok/s** — clipboard text now uses one decimal like the decode-bench table (`31.5` not `31`), and TTFT uses the same mean as the table. ([#57](https://github.com/MiaAI-Lab/sparkDash/issues/57))
 - **SGLang log spam** — probe current `/server_info` and `/model_info` first; keep the deprecated `/get_*` aliases as fallback so old servers still work. ([#52](https://github.com/MiaAI-Lab/sparkDash/issues/52))
 

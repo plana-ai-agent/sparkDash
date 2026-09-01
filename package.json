@@ -1,6 +1,6 @@
 {
   "name": "sparkdash",
-  "version": "1.8.5",
+  "version": "1.8.6",
   "description": "sparkDash \u2014 Multi-DGX Spark Monitoring Dashboard",
   "type": "module",
   "scripts": {

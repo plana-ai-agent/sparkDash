@@ -1,5 +1,5 @@
 /**
- * Shared OpenAI-compatible SSE streaming helpers used by DecodeBench and Showcase.
+ * Shared OpenAI-compatible SSE streaming helpers used by DecodeBench, PrefillBench, and Showcase.
  *
  * Decode tok/s uses the first visible token → last visible token window
  * (not stream EOF), so trailing usage/[DONE] latency does not drag the rate down.

@@ -6,6 +6,7 @@ import { Panel } from "../ui/Panel";
 import { BotIcon, GearIcon, InfoIcon } from "../ui/icons";
 import { useMetricsHistoryTail } from "../../hooks/metricsStore";
 import { BenchmarkDialog } from "./BenchmarkDialog";
+import { PrefillBenchDialog } from "./PrefillBenchDialog";
 import { LlmDailyChart } from "./LlmDailyChart";
 
 interface LlmPanelProps {
@@ -169,6 +170,7 @@ export function LlmPanel({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [engineInfoOpen, setEngineInfoOpen] = useState(false);
   const [benchOpen, setBenchOpen] = useState(false);
+  const [prefillBenchOpen, setPrefillBenchOpen] = useState(false);
   /** Which vLLM metric info tip is open (kvCache | requests | ttftP95 | preempts). */
   const [metricInfoId, setMetricInfoId] = useState<string | null>(null);
   const engineInfoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -717,6 +719,13 @@ export function LlmPanel({
             </button>
             <button
               type="button"
+              onClick={() => setPrefillBenchOpen(true)}
+              className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs font-medium text-text transition-colors hover:border-accent hover:bg-accent-soft"
+            >
+              Run prefill benchmark
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 const params = new URLSearchParams();
                 if (llmPort) params.set("port", String(llmPort));
@@ -742,6 +751,14 @@ export function LlmPanel({
         sparkId={sparkId}
         llmPort={llmPort}
         modelId={llm?.modelId ?? null}
+      />
+      <PrefillBenchDialog
+        open={prefillBenchOpen}
+        onClose={() => setPrefillBenchOpen(false)}
+        sparkId={sparkId}
+        llmPort={llmPort}
+        modelId={llm?.modelId ?? null}
+        contextLength={llm?.contextLength ?? null}
       />
     </Panel>
   );
