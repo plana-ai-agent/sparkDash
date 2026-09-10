@@ -63,3 +63,4 @@ test("failed remove preserves registry entry, secrets, and listeners", () => {
   assert.equal(r.hasPassword("existing"), true);
   assert.deepEqual(events, []);
 });
+

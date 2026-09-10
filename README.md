@@ -429,6 +429,13 @@ Copy `.env.example` to `.env` if needed:
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Reuse authenticated SSH transports for remote collectors. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
 | `SPARKDASH_SSH_KEY` | _(unset)_ | Docker only: **host** path of the SSH key bind-mounted for remote-unit key auth (volume source in `docker-compose.yml`). |
+| `SPARKDASH_ECO_KEY` | _(unset)_ | Shared write key for GPU and CPU ECO. Falls back to `config/eco_key.txt`. |
+| `ECO_KEY_PATH` | `config/eco_key.txt` | Override the shared control key file. |
+
+GPU and CPU ECO share authentication and route handling in `server/ecoCommon.js` and
+`server/ecoRoutes.js`; hardware commands remain in `server/eco.js` and `server/cpuEco.js`.
+CPU ECO saves each node's stock `max_perf` values before the first cap and restores
+that snapshot for **Off**.
 
 > The listener and both Compose files default to `127.0.0.1`. Existing Docker users who opened
 > `http://<host-ip>:5555` must migrate to an SSH tunnel, authenticated reverse proxy, Tailscale
