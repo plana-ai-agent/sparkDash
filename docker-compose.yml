@@ -42,7 +42,7 @@ services:
       - ${SPARKDASH_SSH_KEY:?set SPARKDASH_SSH_KEY in .env}:/run/secrets/sparkdash_id_ed25519:ro
       - ${HOME}/.ssh/known_hosts:/root/.ssh/known_hosts:ro
     # Local LLM runtime switching config lives in config/local-llm.json;
-    # explicit environment: entries below keep precedence over it.
+    # explicit environment: entries below override values from .env.
     env_file:
       - .env
     environment:

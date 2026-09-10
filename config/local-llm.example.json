@@ -1,10 +1,22 @@
 {
   "hostUser": "<host-user>",
   "hostHome": "/home/<host-user>",
-  "<target>": {
-    "modelId": "<model-id>",
-    "label": "<display-label>",
-    "start": "<allowlisted-start-command>",
-    "stop": "<allowlisted-stop-command>"
+  "deepseek": {
+    "modelId": "<deepseek-model-id>",
+    "label": "DeepSeek",
+    "start": "<deepseek-start-command>",
+    "stop": "<deepseek-stop-command>"
+  },
+  "qwen": {
+    "modelId": "<qwen-model-id>",
+    "label": "Qwen",
+    "start": "<qwen-start-command>",
+    "stop": "<qwen-stop-command>"
+  },
+  "glm": {
+    "modelId": "<glm-model-id>",
+    "label": "GLM",
+    "start": "<glm-start-command>",
+    "stop": "<glm-stop-command>"
   }
 }

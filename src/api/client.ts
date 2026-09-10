@@ -7,6 +7,7 @@ import type {
   LlmMetrics,
   LlmDailyResponse,
   LocalLlmSwitchStatus,
+  LocalLlmRuntimeKey,
   Settings,
   ShowcaseListResponse,
   ShowcaseSessionState,
@@ -432,7 +433,7 @@ export function fetchLocalLlmSwitchStatus(): Promise<LocalLlmSwitchStatus> {
 }
 
 export function switchLocalLlmRuntime(
-  target: "deepseek" | "qwen" | "glm",
+  target: LocalLlmRuntimeKey,
   key: string
 ): Promise<LocalLlmSwitchStatus & { success: boolean; started: boolean }> {
   return apiFetch("/api/local-llm/switch", {
@@ -441,99 +442,42 @@ export function switchLocalLlmRuntime(
   });
 }
 
-// ─── GPU clock ECO mode ──────────────────────────────
-/** Clock cap levels ("off" uncaps via -rgc). */
-export type EcoLevel = "2300" | "2200" | "2000" | "1800" | "off";
+// ─── GPU / CPU clock ECO controls ────────────────────────
+export const ECO_LEVELS = ["off", "2300", "2200", "2000", "1800"] as const;
+export const CPU_ECO_LEVELS = ["off", "2500", "2250", "2000", "1750", "1500"] as const;
+export type EcoLevel = typeof ECO_LEVELS[number];
+export type CpuEcoLevel = typeof CPU_ECO_LEVELS[number];
 
-/** Whether a persisted eco level is one of the known UI levels. */
-export function isEcoLevel(v: unknown): v is EcoLevel {
-  return (
-    typeof v === "string" &&
-    (v === "off" || v === "2300" || v === "2200" || v === "2000" || v === "1800")
-  );
-}
-
-// ─── CPU clock ECO mode ──────────────────────────────
-/** CPU cap levels ("off" restores the stock max_perf snapshot). */
-export type CpuEcoLevel = "2500" | "2250" | "2000" | "1750" | "1500" | "off";
-
-/** Whether a persisted CPU eco level is one of the known UI levels. */
-export function isCpuEcoLevel(v: unknown): v is CpuEcoLevel {
-  return (
-    typeof v === "string" &&
-    (v === "off" ||
-      v === "2500" ||
-      v === "2250" ||
-      v === "2000" ||
-      v === "1750" ||
-      v === "1500")
-  );
-}
-
-export interface CpuEcoStatusResponse {
-  /** True when the server has an ECO key configured (writes allowed). */
+export interface EcoStatusResponse {
   writes_enabled: boolean;
-  /** sparkId → "max GHz label · hottest acpitz °C" status line or "no reply". */
+  /** Spark id → telemetry or "no reply". */
   nodes: Record<string, string>;
-  /** sparkId → last applied level ("off" restores stock). Persisted server-side. */
+  /** Last successfully applied levels, persisted on the server. */
+  eco_levels?: Record<string, string>;
   cpu_eco_levels?: Record<string, string>;
 }
 
-export interface CpuEcoSetResponse {
+export interface EcoSetResponse<Level extends string = EcoLevel> {
   ok: boolean;
-  applied: CpuEcoLevel;
-  /** sparkId → "ok" or an error text. */
+  applied: Level;
+  /** Spark id → "ok" or a command error. */
   nodes: Record<string, string>;
 }
 
-/** Live CPU max_perf/temperature readout for every Spark. */
-export function fetchCpuEcoStatus(): Promise<CpuEcoStatusResponse> {
-  return apiFetch("/api/cpu-eco/status");
-}
-
-/** Clamp/release CPU clocks on one Spark (id) or the whole fleet ("fleet"). */
-export function setCpuEcoLevel(
-  node: string,
-  level: CpuEcoLevel,
-  key: string
-): Promise<CpuEcoSetResponse> {
-  return apiFetch("/api/cpu-eco/set", {
-    method: "POST",
-    body: JSON.stringify({ node, level, key }),
-  });
-}
-
-export interface EcoStatusResponse {
-  /** True when the server has an ECO key configured (writes allowed). */
-  writes_enabled: boolean;
-  /** sparkId → "clock, temp, power" CSV line or "no reply". */
-  nodes: Record<string, string>;
-  /** sparkId → last applied level ("off" uncaps). Persisted server-side. */
-  eco_levels?: Record<string, string>;
-}
-
-export interface EcoSetResponse {
-  ok: boolean;
-  applied: EcoLevel;
-  /** sparkId → "ok" or an error text. */
-  nodes: Record<string, string>;
-}
-
-/** Live clock/temp/power readout for every Spark. */
 export function fetchEcoStatus(): Promise<EcoStatusResponse> {
   return apiFetch("/api/eco/status");
 }
 
-/** Cap/uncap GPU clocks on one Spark (id) or the whole fleet ("fleet"). */
-export function setEcoLevel(
-  node: string,
-  level: EcoLevel,
-  key: string
-): Promise<EcoSetResponse> {
-  return apiFetch("/api/eco/set", {
-    method: "POST",
-    body: JSON.stringify({ node, level, key }),
-  });
+export function fetchCpuEcoStatus(): Promise<EcoStatusResponse> {
+  return apiFetch("/api/cpu-eco/status");
+}
+
+export function setEcoLevel(node: string, level: EcoLevel, key: string): Promise<EcoSetResponse> {
+  return apiFetch("/api/eco/set", { method: "POST", body: JSON.stringify({ node, level, key }) });
+}
+
+export function setCpuEcoLevel(node: string, level: CpuEcoLevel, key: string): Promise<EcoSetResponse<CpuEcoLevel>> {
+  return apiFetch("/api/cpu-eco/set", { method: "POST", body: JSON.stringify({ node, level, key }) });
 }
 
 // ─── Hermes update preview ───────────────────────────────

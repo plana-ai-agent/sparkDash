@@ -3,53 +3,27 @@ import {
   fetchLocalLlmSwitchStatus,
   switchLocalLlmRuntime,
 } from "../../api/client";
-import type { LocalLlmLabels, LocalLlmSwitchStatus } from "../../api/types";
+import { requestControlKey, storeControlKey, clearControlKey } from "../../api/controlKey";
+import type { LocalLlmLabels, LocalLlmRuntimeKey, LocalLlmSwitchStatus } from "../../api/types";
 import { Panel } from "../ui/Panel";
 import { BotIcon } from "../ui/icons";
 
-const CONTROL_KEY_STORAGE = "sparkdash.eco.key";
 const STATUS_POLL_MS = 2000;
 
-type Target = "deepseek" | "qwen" | "glm";
-
 // Fallbacks for before the first status poll resolves; the status endpoint
-// serves the deployment-configured labels (LOCAL_LLM_LABEL_* in .env).
+// serves the deployment-configured labels from config/local-llm.json.
 const FALLBACK_LABELS: LocalLlmLabels = {
   deepseek: "DeepSeek",
   qwen: "Qwen",
   glm: "GLM",
 };
 
-const TARGET_KEYS: Target[] = ["deepseek", "qwen", "glm"];
-
-function readStoredKey() {
-  try {
-    return localStorage.getItem(CONTROL_KEY_STORAGE)?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function storeKey(key: string) {
-  try {
-    localStorage.setItem(CONTROL_KEY_STORAGE, key);
-  } catch {
-    /* private mode / blocked storage */
-  }
-}
-
-function clearStoredKey() {
-  try {
-    localStorage.removeItem(CONTROL_KEY_STORAGE);
-  } catch {
-    /* ignore */
-  }
-}
+const TARGET_KEYS: LocalLlmRuntimeKey[] = ["deepseek", "qwen", "glm"];
 
 function runtimeLabel(runtime: LocalLlmSwitchStatus["current"], labels: LocalLlmLabels) {
   if (runtime === "stopped") return "Stopped";
   if (runtime === "unknown") return "Unknown";
-  return labels[runtime as Target] ?? FALLBACK_LABELS[runtime as Target];
+  return labels[runtime] ?? FALLBACK_LABELS[runtime];
 }
 
 function phaseLabel(phase: LocalLlmSwitchStatus["phase"]) {
@@ -68,7 +42,7 @@ function phaseLabel(phase: LocalLlmSwitchStatus["phase"]) {
 
 export function LocalLlmControl() {
   const [status, setStatus] = useState<LocalLlmSwitchStatus | null>(null);
-  const [target, setTarget] = useState<Target>("deepseek");
+  const [target, setTarget] = useState<LocalLlmRuntimeKey>("deepseek");
   const [requesting, setRequesting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const targetInitialized = useRef(false);
@@ -122,24 +96,21 @@ export function LocalLlmControl() {
       return;
     }
 
-    let key = readStoredKey();
-    if (!key) {
-      key = window.prompt("sparkDash control key (same key used by ECO mode):", "")?.trim() || null;
-      if (!key) return;
-    }
+    const key = requestControlKey("sparkDash control key (same key used by ECO mode):");
+    if (!key) return;
 
     setRequesting(true);
     setLoadError(null);
     try {
       const result = await switchLocalLlmRuntime(target, key);
-      storeKey(key);
+      storeControlKey(key);
       setStatus((previous) => ({
         ...result,
-        writesEnabled: previous?.writesEnabled ?? true,
+        labels: result.labels ?? previous?.labels,
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to start runtime switch";
-      if (/key/i.test(message)) clearStoredKey();
+      if (/key/i.test(message)) clearControlKey();
       setLoadError(message);
     } finally {
       setRequesting(false);
@@ -193,7 +164,7 @@ export function LocalLlmControl() {
             <span className="text-[10px] uppercase tracking-wide text-muted">Switch to</span>
             <select
               value={target}
-              onChange={(event) => setTarget(event.target.value as Target)}
+              onChange={(event) => setTarget(event.target.value as LocalLlmRuntimeKey)}
               disabled={switching}
               className="w-full rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs text-text outline-none focus:border-accent disabled:opacity-50"
               aria-label="Local LLM runtime target"

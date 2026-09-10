@@ -429,6 +429,9 @@ Copy `.env.example` to `.env` if needed:
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Reuse authenticated SSH transports for remote collectors. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
 | `SPARKDASH_SSH_KEY` | _(unset)_ | Docker only: **host** path of the SSH key bind-mounted for remote-unit key auth (volume source in `docker-compose.yml`). |
+| `SPARKDASH_ECO_KEY` | _(unset)_ | Shared write key for GPU ECO, CPU ECO, and Local LLM switching. Falls back to `config/eco_key.txt`. |
+| `ECO_KEY_PATH` | `config/eco_key.txt` | Override the shared control key file. |
+| `LOCAL_LLM_CONFIG_PATH` | `config/local-llm.json` | Override the deployment's Local LLM runtime configuration file. |
 | `LOCAL_LLM_CMD_PATH` | derived | `PATH` passed to the Local LLM runtime command shell. |
 | `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` | _(empty)_ | Comma-separated Local LLM targets that skip auto-rollback on failed switches. |
 
@@ -437,6 +440,17 @@ Copy `.env.example` to `.env` if needed:
 > runtime target with its `/v1/models` model ID, display label, and allowlisted host
 > lifecycle commands. When a required value is missing the dashboard keeps running, but
 > `/api/local-llm/*` answers with a configuration error instead of starting or stopping runtimes.
+
+The three runtime keys are `deepseek`, `qwen`, and `glm`; copy the example and replace
+its placeholder values. JSON fields take precedence over the deprecated `LOCAL_LLM_*`
+environment variables, which fill omitted fields.
+
+GPU and CPU ECO share authentication and route handling in `server/ecoCommon.js` and
+`server/ecoRoutes.js`; hardware commands remain in `server/eco.js` and `server/cpuEco.js`.
+CPU ECO saves each node's stock `max_perf` values before the first cap and restores
+that snapshot for **Off**. Local LLM switching separates deployment configuration
+(`localLlmConfig.js`), host process execution (`localLlmCommands.js`), and switch/recovery
+state (`localLlmSwitch.js`).
 
 > The listener and both Compose files default to `127.0.0.1`. Existing Docker users who opened
 > `http://<host-ip>:5555` must migrate to an SSH tunnel, authenticated reverse proxy, Tailscale

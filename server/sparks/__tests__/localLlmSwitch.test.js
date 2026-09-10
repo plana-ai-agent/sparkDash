@@ -3,18 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import {
   LocalLlmSwitchManager,
-  buildHostCommandInvocation,
   classifyProbe,
-  loadLocalLlmRuntimeConfig,
   probeLocalLlmRuntime,
   registerLocalLlmRoutes,
-  saveLocalLlmRuntimeConfig,
-  streamLines,
   validateLocalLlmTarget,
 } from "../../localLlmSwitch.js";
+import { loadLocalLlmRuntimeConfig } from "../../localLlmConfig.js";
+import { buildHostCommandInvocation, createHostCommandRunner, streamLines } from "../../localLlmCommands.js";
 
 // Deployment-private values live in config/local-llm.json. The loader keeps a
 // LOCAL_LLM_* env fallback (file wins per key, env fills omitted fields), so
@@ -87,6 +86,37 @@ function makeManager({ probes, failCommands = new Map(), runCommand, delay, maxS
   });
   return { manager, commands };
 }
+
+test("host command runner launches the allowlisted command and propagates output and failures", async () => {
+  for (const exitCode of [0, 7]) {
+    const lines = [];
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    const run = createHostCommandRunner((file, args, options) => {
+      assert.equal(file, "/usr/bin/nsenter");
+      assert.equal(args.at(-1), FIXTURE_ENV.LOCAL_LLM_CMD_START_QWEN);
+      assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]);
+      queueMicrotask(() => {
+        child.stdout.end("starting\n");
+        child.stderr.end("diagnostic\n");
+        setImmediate(() => child.emit("close", exitCode, null));
+      });
+      return child;
+    });
+    const operation = run("start-qwen", { onLine: (line) => lines.push(line) });
+    if (exitCode) await assert.rejects(operation, /exit 7/);
+    else await operation;
+    assert.deepEqual(lines, ["starting", "diagnostic"]);
+  }
+  await assert.rejects(createHostCommandRunner()("toString"), /allowlisted/);
+  await assert.rejects(createHostCommandRunner()("shell"), /allowlisted/);
+});
+
+test("host runner propagates synchronous process creation errors", async () => {
+  const run = createHostCommandRunner(() => { throw new Error("fixture process failure"); });
+  await assert.rejects(run("start-qwen"), /fixture process failure/);
+});
 
 test("overlong unterminated lifecycle output is redacted as one bounded line", async () => {
   const stream = new PassThrough();
@@ -299,28 +329,6 @@ test("config file with unknown keys is rejected", () => {
     /unknown keys: mistral/
   );
   fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
-});
-
-test("saveLocalLlmRuntimeConfig writes a normalized file that loads back identically", () => {
-  const configPath = tempConfigPath();
-  let config;
-  let reloaded;
-  try {
-    withConfigPath(configPath, () => {
-      config = loadLocalLlmRuntimeConfig(process.env);
-      saveLocalLlmRuntimeConfig(config);
-    });
-    const written = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    assert.equal(written.hostUser, "sparkdash-test");
-    assert.equal(written.hostHome, "/home/sparkdash-test");
-    assert.deepEqual(Object.keys(written).sort(), ["deepseek", "glm", "hostHome", "hostUser", "qwen"]);
-    assert.equal(written.deepseek.label, "Fixture DeepSeek Label");
-    assert.equal(written.glm.stop, FIXTURE_ENV.LOCAL_LLM_CMD_STOP_GLM);
-    reloaded = withConfigPath(configPath, () => loadLocalLlmRuntimeConfig({}));
-  } finally {
-    fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
-  }
-  assert.deepEqual(reloaded, config);
 });
 
 test("target validation admits only the fixed deepseek, qwen, and glm enum", () => {

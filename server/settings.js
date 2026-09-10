@@ -64,16 +64,8 @@ function _clampSettings(settings) {
   if (s.density !== "comfortable" && s.density !== "compact") {
     s.density = DEFAULTS.density;
   }
-  // Ensure ecoLevels is a plain object (sparkId → level)
-  if (typeof s.ecoLevels !== "object" || s.ecoLevels === null || Array.isArray(s.ecoLevels)) {
-    s.ecoLevels = {};
-  }
-  // Ensure cpuEcoLevels / cpuEcoSnapshots are plain objects
-  if (typeof s.cpuEcoLevels !== "object" || s.cpuEcoLevels === null || Array.isArray(s.cpuEcoLevels)) {
-    s.cpuEcoLevels = {};
-  }
-  if (typeof s.cpuEcoSnapshots !== "object" || s.cpuEcoSnapshots === null || Array.isArray(s.cpuEcoSnapshots)) {
-    s.cpuEcoSnapshots = {};
+  for (const key of ["ecoLevels", "cpuEcoLevels", "cpuEcoSnapshots"]) {
+    if (!s[key] || typeof s[key] !== "object" || Array.isArray(s[key])) s[key] = {};
   }
   return s;
 }

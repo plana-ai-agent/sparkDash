@@ -21,14 +21,8 @@ import { authorizeUpgrade, configuredToken, createAuthMiddleware, requireRemoteA
 import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
-import { ECO_LEVELS, ecoKeyOk, ecoSet, ecoStatus, getEcoKey } from "./eco.js";
-import {
-  CPU_ECO_LEVELS,
-  cpuEcoKeyOk,
-  cpuEcoSet,
-  cpuEcoStatus,
-  getCpuEcoKey,
-} from "./cpuEco.js";
+import { ecoKeyOk, getEcoKey } from "./ecoCommon.js";
+import { registerEcoRoutes } from "./ecoRoutes.js";
 import { LocalLlmSwitchManager, registerLocalLlmRoutes } from "./localLlmSwitch.js";
 import {
   decodeBenchManager,
@@ -1611,114 +1605,7 @@ app.post("/api/sparks/:id/wake", async (req, res) => {
   }
 });
 
-// ─── GPU clock ECO mode ──────────────────────────────────
-// Cap/uncap GPU clocks (nvidia-smi -lgc / -rgc) on one Spark or the whole
-// fleet. Writes require the ECO key (env SPARKDASH_ECO_KEY or
-// config/eco_key.txt); the status readout is open like the rest of the dashboard.
-
-app.get("/api/eco/status", async (_req, res) => {
-  try {
-    const nodes = await ecoStatus(registry.sparks);
-    res.json({
-      writes_enabled: Boolean(getEcoKey()),
-      nodes,
-      // Last-applied level per Spark — persisted so the UI can restore the
-      // selection after a reload (the GPU cap itself survives; only the UI
-      // widget was losing its state).
-      eco_levels: getSettings().ecoLevels,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/eco/set", async (req, res) => {
-  try {
-    const body = req.body || {};
-    if (!ecoKeyOk(body.key)) {
-      return res.status(403).json({ error: "Invalid or missing ECO key" });
-    }
-    const { node, level } = body;
-    if (level !== "off" && !Object.prototype.hasOwnProperty.call(ECO_LEVELS, level)) {
-      return res.status(400).json({ error: "Invalid ECO level" });
-    }
-    let targets;
-    if (node === "fleet") {
-      targets = registry.sparks;
-    } else if (typeof node === "string" && node.length > 0) {
-      const spark = registry.getSpark(node);
-      if (!spark) return res.status(400).json({ error: "Unknown Spark" });
-      targets = [spark];
-    } else {
-      return res.status(400).json({ error: "node must be a Spark id or 'fleet'" });
-    }
-    const nodes = {};
-    const ecoLevels = { ...getSettings().ecoLevels };
-    for (const spark of targets) {
-      nodes[spark.id] = await ecoSet(spark, level);
-      // Persist only on success — a failed command leaves the GPU cap
-      // (probably) unchanged, so the last known level stays the record.
-      if (nodes[spark.id] === "ok") ecoLevels[spark.id] = level;
-    }
-    updateSettings({ ecoLevels });
-    res.json({ ok: true, applied: level, nodes });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ─── CPU clock ECO mode ──────────────────────────────────
-// Clamp/release the per-CPU CPPC `max_perf` ceiling on one Spark or the whole
-// fleet (GB10's real CPU clock control — `scaling_max_freq` is a placebo).
-// Same ECO key as the GPU control; stock snapshots persist in settings.json.
-
-app.get("/api/cpu-eco/status", async (_req, res) => {
-  try {
-    const nodes = await cpuEcoStatus(registry.sparks);
-    res.json({
-      writes_enabled: Boolean(getCpuEcoKey()),
-      nodes,
-      cpu_eco_levels: getSettings().cpuEcoLevels,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/cpu-eco/set", async (req, res) => {
-  try {
-    const body = req.body || {};
-    if (!cpuEcoKeyOk(body.key)) {
-      return res.status(403).json({ error: "Invalid or missing ECO key" });
-    }
-    const { node, level } = body;
-    if (level !== "off" && !Object.prototype.hasOwnProperty.call(CPU_ECO_LEVELS, level)) {
-      return res.status(400).json({ error: "Invalid CPU ECO level" });
-    }
-    let targets;
-    if (node === "fleet") {
-      targets = registry.sparks;
-    } else if (typeof node === "string" && node.length > 0) {
-      const spark = registry.getSpark(node);
-      if (!spark) return res.status(400).json({ error: "Unknown Spark" });
-      targets = [spark];
-    } else {
-      return res.status(400).json({ error: "node must be a Spark id or 'fleet'" });
-    }
-    const nodes = {};
-    const cpuEcoLevels = { ...getSettings().cpuEcoLevels };
-    for (const spark of targets) {
-      nodes[spark.id] = await cpuEcoSet(spark, level);
-      // Persist only on success — a failed command leaves the CPU cap
-      // (probably) unchanged, so the last known level stays the record.
-      if (nodes[spark.id] === "ok") cpuEcoLevels[spark.id] = level;
-    }
-    updateSettings({ cpuEcoLevels });
-    res.json({ ok: true, applied: level, nodes });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+registerEcoRoutes(app, registry);
 
 // ─── Static files (built frontend) ───────────────────────
 const distDir = path.join(ROOT, "dist");

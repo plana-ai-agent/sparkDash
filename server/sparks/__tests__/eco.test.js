@@ -6,13 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import {
   ECO_LEVELS,
-  ecoKeyOk,
   ecoLevelArg,
   ecoRemoteCommand,
   ecoSet,
   ecoStatus,
-  getEcoKey,
 } from "../../eco.js";
+import { ecoKeyOk, getEcoKey } from "../../ecoCommon.js";
 
 test("ECO_LEVELS maps cap levels to -lgc clamps", () => {
   assert.deepEqual(ECO_LEVELS, {
@@ -43,7 +42,7 @@ test("ecoKeyOk is false when no key is configured", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "eco-test-"));
   process.env.ECO_KEY_PATH = path.join(dir, "missing.txt");
   try {
-    const mod = await import(`../../eco.js?nokey=${Date.now()}`);
+    const mod = await import(`../../ecoCommon.js?nokey=${Date.now()}`);
     assert.equal(mod.getEcoKey(), null);
     assert.equal(mod.ecoKeyOk("anything"), false);
   } finally {
@@ -58,7 +57,7 @@ test("getEcoKey reads trimmed config/eco_key.txt via ECO_KEY_PATH", async () => 
   fs.writeFileSync(keyPath, "  file-key  \n");
   process.env.ECO_KEY_PATH = keyPath;
   try {
-    const mod = await import(`../../eco.js?file=${Date.now()}`);
+    const mod = await import(`../../ecoCommon.js?file=${Date.now()}`);
     assert.equal(mod.getEcoKey(), "file-key");
   } finally {
     delete process.env.ECO_KEY_PATH;
@@ -72,10 +71,10 @@ test("getEcoKey returns null for an empty or missing key file", async () => {
   fs.writeFileSync(keyPath, "   \n");
   process.env.ECO_KEY_PATH = keyPath;
   try {
-    const mod = await import(`../../eco.js?empty=${Date.now()}`);
+    const mod = await import(`../../ecoCommon.js?empty=${Date.now()}`);
     assert.equal(mod.getEcoKey(), null);
     process.env.ECO_KEY_PATH = path.join(dir, "missing.txt");
-    const mod2 = await import(`../../eco.js?missing=${Date.now()}`);
+    const mod2 = await import(`../../ecoCommon.js?missing=${Date.now()}`);
     assert.equal(mod2.getEcoKey(), null);
   } finally {
     delete process.env.ECO_KEY_PATH;
@@ -89,7 +88,7 @@ test("SPARKDASH_ECO_KEY wins over the key file", async () => {
   process.env.ECO_KEY_PATH = path.join(dir, "eco_key.txt");
   process.env.SPARKDASH_ECO_KEY = "env-key";
   try {
-    const mod = await import(`../../eco.js?precedence=${Date.now()}`);
+    const mod = await import(`../../ecoCommon.js?precedence=${Date.now()}`);
     assert.equal(mod.getEcoKey(), "env-key");
     assert.equal(mod.ecoKeyOk("env-key"), true);
     assert.equal(mod.ecoKeyOk("file-key"), false);
@@ -114,9 +113,9 @@ test("ecoLevelArg rejects unknown levels", () => {
   }
 });
 
-test("ecoRemoteCommand wraps the level in sudo nvidia-smi", () => {
-  assert.equal(ecoRemoteCommand("2300"), "sudo nvidia-smi -lgc 0,2300");
-  assert.equal(ecoRemoteCommand("off"), "sudo nvidia-smi -rgc");
+test("ecoRemoteCommand wraps the level in sudo -n nvidia-smi", () => {
+  assert.equal(ecoRemoteCommand("2300"), "sudo -n nvidia-smi -lgc 0,2300");
+  assert.equal(ecoRemoteCommand("off"), "sudo -n nvidia-smi -rgc");
   assert.equal(ecoRemoteCommand("1500"), null);
 });
 

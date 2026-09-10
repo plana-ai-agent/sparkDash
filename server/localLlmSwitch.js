@@ -1,176 +1,7 @@
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import { atomicWrite } from "./util/atomicWrite.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const ROOT = path.resolve(__dirname, "..");
-
-const LOCAL_LLM_CONFIG_FILENAME = path.join(ROOT, "config", "local-llm.json");
-
-/** Config path resolved at call time so tests can redirect it via env. */
-function defaultConfigPath() {
-  return process.env.LOCAL_LLM_CONFIG_PATH || LOCAL_LLM_CONFIG_FILENAME;
-}
-
-/**
- * Deployment-private Local LLM runtime config (model IDs, display labels, the
- * host lifecycle commands, the host user/path) lives in config/local-llm.json
- * (gitignored) — never in source. Only the structural runtime keys
- * ("deepseek" | "qwen" | "glm") are fixed here, so the API contract and the
- * tests stay independent of any deployment.
- *
- * LOCAL_LLM_* env vars remain as a deprecated fallback: values present in the
- * environment still load (env > file per key), so existing deployments keep
- * working and can migrate gradually.
- */
-const TARGET_KEYS = Object.freeze(["deepseek", "qwen", "glm"]);
-const TARGET_FIELDS = Object.freeze(["modelId", "label", "start", "stop"]);
-
-// Neutral fallbacks derived from the structural runtime keys. Deployment
-// profiles override these via each target's "label" in config/local-llm.json.
-const TARGET_LABEL_FALLBACKS = Object.freeze({
-  deepseek: "DeepSeek",
-  qwen: "Qwen",
-  glm: "GLM",
-});
-
-function readJsonConfigFile(filePath) {
-  let raw;
-  try {
-    raw = fs.readFileSync(filePath, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return { data: null };
-    throw error;
-  }
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(
-      `config/local-llm.json is not valid JSON (${error.message}); fix or remove the file (see config/local-llm.example.json)`
-    );
-  }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    throw new Error("config/local-llm.json must contain a JSON object");
-  }
-  return { data };
-}
-
-/** Coerce + validate one target entry. Returns null when the key is absent. */
-function readTarget(fileData, env, key, missing) {
-  const upper = key.toUpperCase();
-  const rawFile = fileData?.[key];
-  const hasFileEntry = typeof rawFile === "object" && rawFile !== null;
-  const rawEnv = env[`LOCAL_LLM_MODEL_${upper}`];
-  const envOnly = !hasFileEntry && rawEnv !== undefined;
-
-  const source = (name, envPrefix) => {
-    const fileValue = hasFileEntry ? rawFile[name] : undefined;
-    const envName = envPrefix ? `${envPrefix}_${upper}` : undefined;
-    const value = String(fileValue ?? (envName ? env[envName] : undefined) ?? "").trim();
-    if (!value) missing.push(`${key}.${name}`);
-    return value;
-  };
-  const optional = (name, envPrefix, fallback) => {
-    const fileValue = hasFileEntry ? rawFile[name] : undefined;
-    const envName = envPrefix ? `${envPrefix}_${upper}` : undefined;
-    return (
-      String(fileValue ?? (envName ? env[envName] : undefined) ?? "").trim() || fallback
-    );
-  };
-
-  const target = {
-    modelId: source("modelId", "LOCAL_LLM_MODEL"),
-    label: optional("label", "LOCAL_LLM_LABEL", TARGET_LABEL_FALLBACKS[key]),
-    start: source("start", "LOCAL_LLM_CMD_START"),
-    stop: source("stop", "LOCAL_LLM_CMD_STOP"),
-  };
-  // Warn once per key when a target is configured only through deprecated
-  // LOCAL_LLM_* env vars — the deployment should move into the JSON file.
-  if (envOnly && missing.length === 0) {
-    console.warn(
-      `[localLlmConfig] ${key}: LOCAL_LLM_* env vars are deprecated; move this target into ${defaultConfigPath()} (see config/local-llm.example.json)`
-    );
-  }
-  return target;
-}
-
-export function loadLocalLlmRuntimeConfig(env = process.env) {
-  const { data: fileData } = readJsonConfigFile(defaultConfigPath());
-  const missing = [];
-  const unknownKeys = Object.keys(fileData ?? {}).filter(
-    (key) => key !== "hostUser" && key !== "hostHome" && !TARGET_KEYS.includes(key)
-  );
-  if (unknownKeys.length > 0) {
-    throw new Error(
-      `config/local-llm.json has unknown keys: ${unknownKeys.join(", ")} (expected: ${TARGET_KEYS.join(", ")})`
-    );
-  }
-  const targets = {};
-  const hostCommands = {};
-  for (const key of TARGET_KEYS) {
-    targets[key] = Object.freeze(readTarget(fileData, env, key, missing));
-    hostCommands[`stop-${key}`] = targets[key].stop;
-    hostCommands[`start-${key}`] = targets[key].start;
-  }
-  const readEnv = (name) => {
-    const value = String(env[name] ?? "").trim();
-    if (!value) missing.push(name);
-    return value;
-  };
-  const hostUser =
-    String(fileData?.hostUser ?? "").trim() || readEnv("LOCAL_LLM_HOST_USER");
-  const hostHome =
-    String(fileData?.hostHome ?? "").trim() || readEnv("LOCAL_LLM_HOST_HOME");
-  if (missing.length > 0) {
-    throw new Error(
-      `Local LLM runtime switching is not configured; set ${missing.join(", ")} in config/local-llm.json (see config/local-llm.example.json)`
-    );
-  }
-  return Object.freeze({
-    hostUser,
-    hostHome,
-    targets: Object.freeze(targets),
-    hostCommands: Object.freeze(hostCommands),
-  });
-}
-
-export function saveLocalLlmRuntimeConfig(config, filePath = defaultConfigPath()) {
-  const fileData = {};
-  for (const key of TARGET_KEYS) {
-    const target = config?.targets?.[key];
-    if (!target) continue;
-    const entry = {};
-    for (const field of TARGET_FIELDS) {
-      const value = target[field];
-      if (typeof value === "string" && value.trim()) entry[field] = value;
-    }
-    if (Object.keys(entry).length > 0) fileData[key] = entry;
-  }
-  if (typeof config?.hostUser === "string" && config.hostUser.trim()) {
-    fileData.hostUser = config.hostUser.trim();
-  }
-  if (typeof config?.hostHome === "string" && config.hostHome.trim()) {
-    fileData.hostHome = config.hostHome.trim();
-  }
-  atomicWrite(filePath, `${JSON.stringify(fileData, null, 2)}\n`, 0o644);
-}
-
-let runtimeConfigCache = null;
-
-function getRuntimeConfig() {
-  if (!runtimeConfigCache) {
-    // Retried on every call until it succeeds, so the dashboard keeps running
-    // (with an unconfigured Local LLM panel) while the config is still missing.
-    runtimeConfigCache = loadLocalLlmRuntimeConfig();
-  }
-  return runtimeConfigCache;
-}
+import { getRuntimeConfig, TARGET_KEYS } from "./localLlmConfig.js";
+import { createHostCommandRunner, LOG_LINE_LIMIT } from "./localLlmCommands.js";
 
 const LOG_LIMIT = 40;
-const LOG_LINE_LIMIT = 500;
 const API_PROBE_TIMEOUT_MS = 5000;
 const STOP_POLL_INTERVAL_MS = 2000;
 const ANSI_ESCAPE = /\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*[@-~])/g;
@@ -234,106 +65,6 @@ function safeLogLine(raw) {
   return line.slice(0, LOG_LINE_LIMIT);
 }
 
-export function streamLines(stream, onLine) {
-  let pending = "";
-  let overlong = false;
-  let skipLineFeed = false;
-
-  const emitLine = () => {
-    onLine(overlong ? "[redacted overlong output]" : pending);
-    pending = "";
-    overlong = false;
-  };
-
-  stream.setEncoding("utf8");
-  stream.on("data", (chunk) => {
-    for (const character of chunk) {
-      if (skipLineFeed) {
-        skipLineFeed = false;
-        if (character === "\n") continue;
-      }
-      if (character === "\r") {
-        emitLine();
-        skipLineFeed = true;
-      } else if (character === "\n") {
-        emitLine();
-      } else if (!overlong) {
-        pending += character;
-        if (pending.length > LOG_LINE_LIMIT) {
-          pending = "";
-          overlong = true;
-        }
-      }
-    }
-  });
-  stream.on("end", () => {
-    if (overlong) onLine("[redacted overlong output]");
-    else if (pending) onLine(pending);
-  });
-}
-
-export function buildHostCommandInvocation(command) {
-  const { hostUser, hostHome, hostCommands } = getRuntimeConfig();
-  const fixedCommand = hostCommands[command];
-  if (!fixedCommand) throw new Error("host command is not allowlisted");
-  const pathEnv =
-    process.env.LOCAL_LLM_CMD_PATH ||
-    `${hostHome}/.local/bin:/usr/local/cuda/bin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`;
-  return {
-    file: "/usr/bin/nsenter",
-    args: [
-      "-t",
-      "1",
-      "-m",
-      "-u",
-      "-i",
-      "-n",
-      "-p",
-      "--",
-      "/usr/sbin/runuser",
-      "-u",
-      hostUser,
-      "--",
-      "/usr/bin/env",
-      "-i",
-      `HOME=${hostHome}`,
-      `USER=${hostUser}`,
-      `LOGNAME=${hostUser}`,
-      "SHELL=/bin/bash",
-      `PATH=${pathEnv}`,
-      "LANG=C.UTF-8",
-      "/bin/bash",
-      "--noprofile",
-      "--norc",
-      "-c",
-      fixedCommand,
-    ],
-    options: { stdio: ["ignore", "pipe", "pipe"] },
-  };
-}
-
-export function createHostCommandRunner() {
-  return (command, { onLine } = {}) =>
-    new Promise((resolve, reject) => {
-      let invocation;
-      try {
-        invocation = buildHostCommandInvocation(command);
-      } catch (error) {
-        reject(error);
-        return;
-      }
-      const child = spawn(invocation.file, invocation.args, invocation.options);
-      const emit = typeof onLine === "function" ? onLine : () => {};
-      streamLines(child.stdout, emit);
-      streamLines(child.stderr, emit);
-      child.once("error", reject);
-      child.once("close", (code, signal) => {
-        if (code === 0) resolve();
-        else reject(new Error(`lifecycle command ${command} failed (${signal || `exit ${code}`})`));
-      });
-    });
-}
-
 function publicClone(status) {
   return {
     ...status,
@@ -385,6 +116,25 @@ export function registerLocalLlmRoutes(app, { manager, keyOk, writesEnabled }) {
   });
 }
 
+function initialStatus(detected = { runtime: "unknown", modelId: null, health: "unknown" }) {
+  return {
+    state: "idle",
+    phase: "idle",
+    current: detected.runtime,
+    currentModelId: detected.modelId,
+    health: detected.health,
+    source: null,
+    target: null,
+    startedAt: null,
+    finishedAt: null,
+    message: "Checking runtime",
+    error: null,
+    rollback: null,
+    failureLog: [],
+    log: [],
+  };
+}
+
 export class LocalLlmSwitchManager {
   constructor({
     probeRuntime = probeLocalLlmRuntime,
@@ -406,22 +156,7 @@ export class LocalLlmSwitchManager {
       : parseRollbackDisabledTargets(disableRollbackTargets);
     this._starting = false;
     this._operationPromise = null;
-    this.status = {
-      state: "idle",
-      phase: "idle",
-      current: "unknown",
-      currentModelId: null,
-      health: "unknown",
-      source: null,
-      target: null,
-      startedAt: null,
-      finishedAt: null,
-      message: "Checking runtime",
-      error: null,
-      rollback: null,
-      failureLog: [],
-      log: [],
-    };
+    this.status = initialStatus();
   }
 
   get busy() {
@@ -492,42 +227,28 @@ export class LocalLlmSwitchManager {
       }
       if (sourceDetected.runtime === target && sourceDetected.health === "healthy") {
         this.status = {
-          state: "idle",
+          ...initialStatus(sourceDetected),
           phase: "complete",
-          current: sourceDetected.runtime,
-          currentModelId: sourceDetected.modelId,
-          health: sourceDetected.health,
           source: target,
           target,
-          startedAt: null,
           finishedAt: this.now(),
           message: `${this.targets()[target].label} is already healthy`,
-          error: null,
-          rollback: null,
-          failureLog: [],
           log: [...this.status.log],
         };
         return { started: false, status: publicClone(this.status) };
       }
 
       this.status = {
+        ...initialStatus(sourceDetected),
         state: "switching",
         phase: "stopping",
-        current: sourceDetected.runtime,
-        currentModelId: sourceDetected.modelId,
-        health: sourceDetected.health,
         source: isKnownRuntime(this.targets(), sourceDetected.runtime) ? sourceDetected.runtime : null,
         target,
         startedAt: this.now(),
-        finishedAt: null,
         message:
           isKnownRuntime(this.targets(), sourceDetected.runtime)
             ? `Stopping the current runtime before starting ${this.targets()[target].label}`
             : `Starting ${this.targets()[target].label}`,
-        error: null,
-        rollback: null,
-        failureLog: [],
-        log: [],
       };
 
       const operation = this._executeSwitch(target, sourceDetected);

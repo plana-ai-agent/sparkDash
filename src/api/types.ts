@@ -359,7 +359,7 @@ export interface LlmPosture {
   detail: string;
 }
 
-export type LocalLlmRuntime = "deepseek" | "qwen" | "glm" | "stopped" | "unknown";
+export type LocalLlmRuntime = LocalLlmRuntimeKey | "stopped" | "unknown";
 export type LocalLlmRuntimeKey = "deepseek" | "qwen" | "glm";
 export type LocalLlmSwitchState = "idle" | "switching" | "error";
 
@@ -384,8 +384,8 @@ export interface LocalLlmSwitchStatus {
   current: LocalLlmRuntime;
   currentModelId: string | null;
   health: "healthy" | "stopped" | "unknown";
-  source: "deepseek" | "qwen" | "glm" | null;
-  target: "deepseek" | "qwen" | "glm" | null;
+  source: LocalLlmRuntimeKey | null;
+  target: LocalLlmRuntimeKey | null;
   startedAt: number | null;
   finishedAt: number | null;
   message: string;
