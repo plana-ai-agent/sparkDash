@@ -9,6 +9,9 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Changed
+- **Local LLM runtime config moved to `config/local-llm.json`** — model IDs, display labels, allowlisted lifecycle commands, and the host user/home now live in a gitignored JSON file (template: `config/local-llm.example.json`) instead of one `LOCAL_LLM_*` env block per runtime in `.env`. Adding a runtime is now a single JSON block. Legacy `LOCAL_LLM_*` env vars still work as a per-key fallback (env wins over the file) so existing deployments keep running; `LOCAL_LLM_CMD_PATH` and `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` remain env vars.
+
 ---
 
 ## [1.8.6] — 2026-09-01

@@ -406,15 +406,10 @@ Copy `.env.example` to `.env` if needed:
 | `HOST_ROOT_PATH` | `/host/root` | Host root mount |
 | `SSH_IDENTITY_FILE` | _(unset)_ | Path **inside the process** to a private key (`ssh -i`). Use when the bind-mount is not a default OpenSSH name. |
 | `SPARKDASH_SSH_KEY` | _(unset)_ | Docker only: **host** path of the SSH key bind-mounted for remote-unit key auth (volume source in `docker-compose.yml`). |
-| `LOCAL_LLM_HOST_USER` | _(required)_ | Host user that owns the Local LLM runtime scripts (runuser target on the dashboard host). |
-| `LOCAL_LLM_HOST_HOME` | _(required)_ | Home directory passed as `HOME`/`USER`/`LOGNAME` into the runtime command shell. |
-| `LOCAL_LLM_MODEL_DEEPSEEK` / `_QWEN` / `_GLM` | _(required)_ | Exact model IDs as reported by each runtime's `/v1/models` endpoint; the panel classifies health by these. |
-| `LOCAL_LLM_LABEL_DEEPSEEK` / `_QWEN` / `_GLM` | `DeepSeek` / `Qwen` / `GLM` | Optional display labels shown in the runtime panel (served via the status API — no rebuild needed). |
-| `LOCAL_LLM_CMD_START_DEEPSEEK` / `CMD_STOP_DEEPSEEK` | _(required)_ | Allowlisted host lifecycle commands (same for `_QWEN` / `_GLM`). Executed on the dashboard host via `nsenter`; nothing else can be run. |
-| `LOCAL_LLM_CMD_PATH` | derived | `PATH` passed to the runtime command shell. |
-| `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` | _(empty)_ | Comma-separated targets from `{deepseek,qwen,glm}` that skip auto-rollback on failed switches. |
+| `LOCAL_LLM_*` (legacy) | — | **Deprecated.** Local LLM runtime config moved to `config/local-llm.json` (gitignored; template: `config/local-llm.example.json`). Legacy `LOCAL_LLM_HOST_USER` / `LOCAL_LLM_HOST_HOME` / `LOCAL_LLM_MODEL_*` / `LOCAL_LLM_LABEL_*` / `LOCAL_LLM_CMD_*` env vars still work as a per-key fallback (env wins over the file) but should be migrated. `LOCAL_LLM_CMD_PATH` and `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` remain active env vars. |
 
-> The Local LLM runtime panel requires these values in `.env` (gitignored). When any is
+> The Local LLM runtime panel requires the deployment values in `config/local-llm.json`
+> (gitignored; copy `config/local-llm.example.json`). When any required value is
 > missing the dashboard keeps running, but `/api/local-llm/*` answers with a configuration
 > error instead of starting or stopping runtimes.
 

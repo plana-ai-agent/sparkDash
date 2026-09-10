@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
@@ -8,12 +11,19 @@ import {
   loadLocalLlmRuntimeConfig,
   probeLocalLlmRuntime,
   registerLocalLlmRoutes,
+  saveLocalLlmRuntimeConfig,
   streamLines,
   validateLocalLlmTarget,
 } from "../../localLlmSwitch.js";
 
-// Deployment-private values now live in the environment (.env). Tests use
-// fixture values so they never depend on a real deployment.
+// Deployment-private values live in config/local-llm.json. The loader keeps a
+// LOCAL_LLM_* env fallback (file wins per key, env fills omitted fields), so
+// these tests run from fixture env vars with the config file redirected away.
+// Config-loader tests below override LOCAL_LLM_CONFIG_PATH per test.
+process.env.LOCAL_LLM_CONFIG_PATH = path.join(
+  os.tmpdir(),
+  `sparkdash-local-llm-config-absent-${process.pid}.json`
+);
 const FIXTURE_ENV = {
   LOCAL_LLM_HOST_USER: "sparkdash-test",
   LOCAL_LLM_HOST_HOME: "/home/sparkdash-test",
@@ -195,6 +205,122 @@ test("label overrides come from the environment with neutral fallbacks", () => {
   assert.equal(labels.qwen.label, "Qwen");
   assert.equal(labels.glm.label, "Fixture GLM Label");
   assert.equal(labels.deepseek.modelId, "fixture-deepseek-model");
+});
+
+function withConfigPath(configPath, run) {
+  const previous = process.env.LOCAL_LLM_CONFIG_PATH;
+  process.env.LOCAL_LLM_CONFIG_PATH = configPath;
+  try {
+    return run();
+  } finally {
+    process.env.LOCAL_LLM_CONFIG_PATH = previous;
+  }
+}
+
+function tempConfigPath() {
+  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-llm-cfg-")), "local-llm.json");
+}
+
+test("config file supplies targets and host identity, env fills omitted fields", () => {
+  const configPath = tempConfigPath();
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      hostUser: "cfg-user",
+      hostHome: "/home/cfg-user",
+      deepseek: { modelId: "file-deepseek-model" },
+      glm: {
+        modelId: "file-glm-model",
+        label: "File GLM Label",
+        start: "cd /opt/file-glm && exec ./start.sh",
+        stop: "cd /opt/file-glm && exec ./stop.sh",
+      },
+    })
+  );
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  let config;
+  try {
+    config = withConfigPath(configPath, () => loadLocalLlmRuntimeConfig(process.env));
+  } finally {
+    console.warn = originalWarn;
+    fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+  }
+  assert.equal(config.hostUser, "cfg-user");
+  assert.equal(config.hostHome, "/home/cfg-user");
+  assert.equal(config.targets.glm.modelId, "file-glm-model");
+  assert.equal(config.targets.glm.label, "File GLM Label");
+  assert.equal(config.targets.glm.start, "cd /opt/file-glm && exec ./start.sh");
+  assert.equal(config.targets.glm.stop, "cd /opt/file-glm && exec ./stop.sh");
+  // The file omits deepseek's label/commands — env fallback fills them.
+  assert.equal(config.targets.deepseek.modelId, "file-deepseek-model");
+  assert.equal(config.targets.deepseek.label, "Fixture DeepSeek Label");
+  assert.equal(config.targets.deepseek.start, FIXTURE_ENV.LOCAL_LLM_CMD_START_DEEPSEEK);
+  // qwen has no file entry at all and loads from the (deprecated) env fallback.
+  assert.equal(config.targets.qwen.modelId, QWEN_ID);
+  assert.ok(warnings.some((line) => line.includes("qwen") && line.includes("deprecated")));
+});
+
+test("unconfigured deployments fail pointing at config/local-llm.json", () => {
+  assert.throws(
+    () => loadLocalLlmRuntimeConfig({}),
+    /set .* in config\/local-llm\.json \(see config\/local-llm\.example\.json\)/
+  );
+});
+
+test("invalid config JSON fails with a readable error", () => {
+  const configPath = tempConfigPath();
+  fs.writeFileSync(configPath, "{ not json");
+  assert.throws(
+    () => withConfigPath(configPath, () => loadLocalLlmRuntimeConfig({})),
+    /config\/local-llm\.json is not valid JSON/
+  );
+  fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+});
+
+test("config file with unknown keys is rejected", () => {
+  const configPath = tempConfigPath();
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      hostUser: "cfg-user",
+      hostHome: "/home/cfg-user",
+      glm: {
+        modelId: "file-glm-model",
+        start: "cd /opt/file-glm && exec ./start.sh",
+        stop: "cd /opt/file-glm && exec ./stop.sh",
+      },
+      mistral: { modelId: "not-a-known-target" },
+    })
+  );
+  assert.throws(
+    () => withConfigPath(configPath, () => loadLocalLlmRuntimeConfig({})),
+    /unknown keys: mistral/
+  );
+  fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+});
+
+test("saveLocalLlmRuntimeConfig writes a normalized file that loads back identically", () => {
+  const configPath = tempConfigPath();
+  let config;
+  let reloaded;
+  try {
+    withConfigPath(configPath, () => {
+      config = loadLocalLlmRuntimeConfig(process.env);
+      saveLocalLlmRuntimeConfig(config);
+    });
+    const written = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    assert.equal(written.hostUser, "sparkdash-test");
+    assert.equal(written.hostHome, "/home/sparkdash-test");
+    assert.deepEqual(Object.keys(written).sort(), ["deepseek", "glm", "hostHome", "hostUser", "qwen"]);
+    assert.equal(written.deepseek.label, "Fixture DeepSeek Label");
+    assert.equal(written.glm.stop, FIXTURE_ENV.LOCAL_LLM_CMD_STOP_GLM);
+    reloaded = withConfigPath(configPath, () => loadLocalLlmRuntimeConfig({}));
+  } finally {
+    fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+  }
+  assert.deepEqual(reloaded, config);
 });
 
 test("target validation admits only the fixed deepseek, qwen, and glm enum", () => {
