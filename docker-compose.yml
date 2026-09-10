@@ -41,7 +41,7 @@ services:
       # The host-side key path is set in .env (SPARKDASH_SSH_KEY, gitignored).
       - ${SPARKDASH_SSH_KEY:?set SPARKDASH_SSH_KEY in .env}:/run/secrets/sparkdash_id_ed25519:ro
       - ${HOME}/.ssh/known_hosts:/root/.ssh/known_hosts:ro
-    # Deployment-private values (LOCAL_LLM_* runtime config) come from .env;
+    # Local LLM runtime switching config lives in config/local-llm.json;
     # explicit environment: entries below keep precedence over it.
     env_file:
       - .env
