@@ -1,22 +1,10 @@
 {
   "hostUser": "<host-user>",
   "hostHome": "/home/<host-user>",
-  "deepseek": {
-    "modelId": "<model-id-as-reported-by-/v1/models>",
-    "label": "DeepSeek V4 Flash",
-    "start": "cd /path/to/deepseek-runtime && exec ./start.sh",
-    "stop": "cd /path/to/deepseek-runtime && exec ./stop.sh"
-  },
-  "qwen": {
-    "modelId": "<model-id-as-reported-by-/v1/models>",
-    "label": "Qwen3.8 Flash Next",
-    "start": "cd /path/to/qwen-runtime && exec ./start.sh serve",
-    "stop": "cd /path/to/qwen-runtime && exec ./start.sh stop"
-  },
-  "glm": {
-    "modelId": "<model-id-as-reported-by-/v1/models>",
-    "label": "GLM-5.3 Flash",
-    "start": "cd /path/to/glm-runtime && exec ./start.sh",
-    "stop": "cd /path/to/glm-runtime && exec ./stop.sh"
+  "<target>": {
+    "modelId": "<model-id>",
+    "label": "<display-label>",
+    "start": "<allowlisted-start-command>",
+    "stop": "<allowlisted-stop-command>"
   }
 }

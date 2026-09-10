@@ -429,12 +429,14 @@ Copy `.env.example` to `.env` if needed:
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Reuse authenticated SSH transports for remote collectors. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
 | `SPARKDASH_SSH_KEY` | _(unset)_ | Docker only: **host** path of the SSH key bind-mounted for remote-unit key auth (volume source in `docker-compose.yml`). |
-| `LOCAL_LLM_*` (legacy) | — | **Deprecated.** Local LLM runtime config moved to `config/local-llm.json` (gitignored; template: `config/local-llm.example.json`). Legacy `LOCAL_LLM_HOST_USER` / `LOCAL_LLM_HOST_HOME` / `LOCAL_LLM_MODEL_*` / `LOCAL_LLM_LABEL_*` / `LOCAL_LLM_CMD_*` env vars still work as a per-key fallback (env wins over the file) but should be migrated. `LOCAL_LLM_CMD_PATH` and `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` remain active env vars. |
+| `LOCAL_LLM_CMD_PATH` | derived | `PATH` passed to the Local LLM runtime command shell. |
+| `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` | _(empty)_ | Comma-separated Local LLM targets that skip auto-rollback on failed switches. |
 
-> The Local LLM runtime panel requires the deployment values in `config/local-llm.json`
-> (gitignored; copy `config/local-llm.example.json`). When any required value is
-> missing the dashboard keeps running, but `/api/local-llm/*` answers with a configuration
-> error instead of starting or stopping runtimes.
+> The Local LLM runtime panel is configured per deployment in `config/local-llm.json`
+> (gitignored; see `config/local-llm.example.json` for the schema). Each entry defines a
+> runtime target with its `/v1/models` model ID, display label, and allowlisted host
+> lifecycle commands. When a required value is missing the dashboard keeps running, but
+> `/api/local-llm/*` answers with a configuration error instead of starting or stopping runtimes.
 
 > The listener and both Compose files default to `127.0.0.1`. Existing Docker users who opened
 > `http://<host-ip>:5555` must migrate to an SSH tunnel, authenticated reverse proxy, Tailscale

@@ -453,6 +453,56 @@ export function isEcoLevel(v: unknown): v is EcoLevel {
   );
 }
 
+// ─── CPU clock ECO mode ──────────────────────────────
+/** CPU cap levels ("off" restores the stock max_perf snapshot). */
+export type CpuEcoLevel = "2500" | "2250" | "2000" | "1750" | "1500" | "off";
+
+/** Whether a persisted CPU eco level is one of the known UI levels. */
+export function isCpuEcoLevel(v: unknown): v is CpuEcoLevel {
+  return (
+    typeof v === "string" &&
+    (v === "off" ||
+      v === "2500" ||
+      v === "2250" ||
+      v === "2000" ||
+      v === "1750" ||
+      v === "1500")
+  );
+}
+
+export interface CpuEcoStatusResponse {
+  /** True when the server has an ECO key configured (writes allowed). */
+  writes_enabled: boolean;
+  /** sparkId → "max GHz label · hottest acpitz °C" status line or "no reply". */
+  nodes: Record<string, string>;
+  /** sparkId → last applied level ("off" restores stock). Persisted server-side. */
+  cpu_eco_levels?: Record<string, string>;
+}
+
+export interface CpuEcoSetResponse {
+  ok: boolean;
+  applied: CpuEcoLevel;
+  /** sparkId → "ok" or an error text. */
+  nodes: Record<string, string>;
+}
+
+/** Live CPU max_perf/temperature readout for every Spark. */
+export function fetchCpuEcoStatus(): Promise<CpuEcoStatusResponse> {
+  return apiFetch("/api/cpu-eco/status");
+}
+
+/** Clamp/release CPU clocks on one Spark (id) or the whole fleet ("fleet"). */
+export function setCpuEcoLevel(
+  node: string,
+  level: CpuEcoLevel,
+  key: string
+): Promise<CpuEcoSetResponse> {
+  return apiFetch("/api/cpu-eco/set", {
+    method: "POST",
+    body: JSON.stringify({ node, level, key }),
+  });
+}
+
 export interface EcoStatusResponse {
   /** True when the server has an ECO key configured (writes allowed). */
   writes_enabled: boolean;

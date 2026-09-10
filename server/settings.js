@@ -29,6 +29,10 @@ const DEFAULTS = Object.freeze({
   showOverviewSearch: false,
   /** Last-applied GPU clock ECO level per Spark (sparkId → "off" | level). */
   ecoLevels: {},
+  /** Last-applied CPU clock ECO level per Spark (sparkId → "off" | level). */
+  cpuEcoLevels: {},
+  /** Stock max_perf snapshot per Spark (sparkId → {max_perf_khz}). */
+  cpuEcoSnapshots: {},
 });
 
 /** @type {typeof DEFAULTS} */
@@ -63,6 +67,13 @@ function _clampSettings(settings) {
   // Ensure ecoLevels is a plain object (sparkId → level)
   if (typeof s.ecoLevels !== "object" || s.ecoLevels === null || Array.isArray(s.ecoLevels)) {
     s.ecoLevels = {};
+  }
+  // Ensure cpuEcoLevels / cpuEcoSnapshots are plain objects
+  if (typeof s.cpuEcoLevels !== "object" || s.cpuEcoLevels === null || Array.isArray(s.cpuEcoLevels)) {
+    s.cpuEcoLevels = {};
+  }
+  if (typeof s.cpuEcoSnapshots !== "object" || s.cpuEcoSnapshots === null || Array.isArray(s.cpuEcoSnapshots)) {
+    s.cpuEcoSnapshots = {};
   }
   return s;
 }
