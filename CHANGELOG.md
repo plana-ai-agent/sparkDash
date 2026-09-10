@@ -19,6 +19,7 @@ Format: version sections are listed newest first.
 - **Local LLM runtime config moved to `config/local-llm.json`** — model IDs, display labels, allowlisted lifecycle commands, and the host user/home now live in a gitignored JSON file (template: `config/local-llm.example.json`) instead of one `LOCAL_LLM_*` env block per runtime in `.env`. Adding a runtime is now a single JSON block. Legacy `LOCAL_LLM_*` env vars still work as a per-key fallback (env wins over the file) so existing deployments keep running; `LOCAL_LLM_CMD_PATH` and `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` remain env vars.
 
 ### Fixed
+- **Decode bench “Too many benchmark requests”** — start quota was 6/min stacked with a 2/min cooldown, and failed retries still burned the quota. Starts are now 20/min, cooldown is 3s (double-click only), and 400/409 responses do not count.
 - **Prefill bench still dying at ~5 min** — Node undici aborts streams with no headers/body after 300s. Long prefills now use an Agent with those idle timeouts disabled; the per-size AbortSignal remains the bound.
 - **Remote SSH session churn** — collectors reuse an authenticated SSH transport instead of creating a full SSH/PAM login for every metric poll. `SSH_CONTROL_PERSIST_SECONDS=0` restores one connection per command if needed.
 
