@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 sparks.json
+config/local-llm.json
 config/sparks-secrets.json
 config/.secrets-key
 config/eco_key.txt

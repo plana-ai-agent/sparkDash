@@ -15,6 +15,9 @@ Format: version sections are listed newest first.
 - **On-demand Remote bench** — a **Remote** button next to decode/prefill opens a host + port (HTTPS) field. Paste a Tailscale URL such as `https://name.ts.net/v1/models`; nothing is probed until you run Decode or Prefill against it.
 - **Decode / prefill benches on remote Sparks** — if the remote LLM is not reachable on its LAN IP (loopback-only bind), sparkDash opens an SSH local-forward to `127.0.0.1:<port>` for the job. Bench buttons stay on the LLM card even when the live probe shows no model.
 
+### Changed
+- **Local LLM runtime config moved to `config/local-llm.json`** — model IDs, display labels, allowlisted lifecycle commands, and the host user/home now live in a gitignored JSON file (template: `config/local-llm.example.json`) instead of one `LOCAL_LLM_*` env block per runtime in `.env`. Adding a runtime is now a single JSON block. Legacy `LOCAL_LLM_*` env vars still work as a per-key fallback (env wins over the file) so existing deployments keep running; `LOCAL_LLM_CMD_PATH` and `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` remain env vars.
+
 ### Fixed
 - **Prefill bench still dying at ~5 min** — Node undici aborts streams with no headers/body after 300s. Long prefills now use an Agent with those idle timeouts disabled; the per-size AbortSignal remains the bound.
 - **Remote SSH session churn** — collectors reuse an authenticated SSH transport instead of creating a full SSH/PAM login for every metric poll. `SSH_CONTROL_PERSIST_SECONDS=0` restores one connection per command if needed.

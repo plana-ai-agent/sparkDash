@@ -1,48 +1,132 @@
-import { spawn } from "child_process";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { atomicWrite } from "./util/atomicWrite.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, "..");
+
+const LOCAL_LLM_CONFIG_FILENAME = path.join(ROOT, "config", "local-llm.json");
+
+/** Config path resolved at call time so tests can redirect it via env. */
+function defaultConfigPath() {
+  return process.env.LOCAL_LLM_CONFIG_PATH || LOCAL_LLM_CONFIG_FILENAME;
+}
 
 /**
- * Deployment-specific values (model IDs, host lifecycle commands, the host
- * user/path) are read from the environment (.env, gitignored) — never from
- * source. Only the structural runtime keys ("deepseek" | "qwen" | "glm")
- * and the public product labels are fixed here, so the API contract and
- * the tests stay independent of any deployment.
+ * Deployment-private Local LLM runtime config (model IDs, display labels, the
+ * host lifecycle commands, the host user/path) lives in config/local-llm.json
+ * (gitignored) — never in source. Only the structural runtime keys
+ * ("deepseek" | "qwen" | "glm") are fixed here, so the API contract and the
+ * tests stay independent of any deployment.
+ *
+ * LOCAL_LLM_* env vars remain as a deprecated fallback: values present in the
+ * environment still load (env > file per key), so existing deployments keep
+ * working and can migrate gradually.
  */
 const TARGET_KEYS = Object.freeze(["deepseek", "qwen", "glm"]);
+const TARGET_FIELDS = Object.freeze(["modelId", "label", "start", "stop"]);
 
 // Neutral fallbacks derived from the structural runtime keys. Deployment
-// profiles override these via LOCAL_LLM_LABEL_* in .env.
+// profiles override these via each target's "label" in config/local-llm.json.
 const TARGET_LABEL_FALLBACKS = Object.freeze({
   deepseek: "DeepSeek",
   qwen: "Qwen",
   glm: "GLM",
 });
 
+function readJsonConfigFile(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return { data: null };
+    throw error;
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `config/local-llm.json is not valid JSON (${error.message}); fix or remove the file (see config/local-llm.example.json)`
+    );
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error("config/local-llm.json must contain a JSON object");
+  }
+  return { data };
+}
+
+/** Coerce + validate one target entry. Returns null when the key is absent. */
+function readTarget(fileData, env, key, missing) {
+  const upper = key.toUpperCase();
+  const rawFile = fileData?.[key];
+  const hasFileEntry = typeof rawFile === "object" && rawFile !== null;
+  const rawEnv = env[`LOCAL_LLM_MODEL_${upper}`];
+  const envOnly = !hasFileEntry && rawEnv !== undefined;
+
+  const source = (name, envPrefix) => {
+    const fileValue = hasFileEntry ? rawFile[name] : undefined;
+    const envName = envPrefix ? `${envPrefix}_${upper}` : undefined;
+    const value = String(fileValue ?? (envName ? env[envName] : undefined) ?? "").trim();
+    if (!value) missing.push(`${key}.${name}`);
+    return value;
+  };
+  const optional = (name, envPrefix, fallback) => {
+    const fileValue = hasFileEntry ? rawFile[name] : undefined;
+    const envName = envPrefix ? `${envPrefix}_${upper}` : undefined;
+    return (
+      String(fileValue ?? (envName ? env[envName] : undefined) ?? "").trim() || fallback
+    );
+  };
+
+  const target = {
+    modelId: source("modelId", "LOCAL_LLM_MODEL"),
+    label: optional("label", "LOCAL_LLM_LABEL", TARGET_LABEL_FALLBACKS[key]),
+    start: source("start", "LOCAL_LLM_CMD_START"),
+    stop: source("stop", "LOCAL_LLM_CMD_STOP"),
+  };
+  // Warn once per key when a target is configured only through deprecated
+  // LOCAL_LLM_* env vars — the deployment should move into the JSON file.
+  if (envOnly && missing.length === 0) {
+    console.warn(
+      `[localLlmConfig] ${key}: LOCAL_LLM_* env vars are deprecated; move this target into ${defaultConfigPath()} (see config/local-llm.example.json)`
+    );
+  }
+  return target;
+}
+
 export function loadLocalLlmRuntimeConfig(env = process.env) {
+  const { data: fileData } = readJsonConfigFile(defaultConfigPath());
   const missing = [];
-  const read = (name) => {
+  const unknownKeys = Object.keys(fileData ?? {}).filter(
+    (key) => key !== "hostUser" && key !== "hostHome" && !TARGET_KEYS.includes(key)
+  );
+  if (unknownKeys.length > 0) {
+    throw new Error(
+      `config/local-llm.json has unknown keys: ${unknownKeys.join(", ")} (expected: ${TARGET_KEYS.join(", ")})`
+    );
+  }
+  const targets = {};
+  const hostCommands = {};
+  for (const key of TARGET_KEYS) {
+    targets[key] = Object.freeze(readTarget(fileData, env, key, missing));
+    hostCommands[`stop-${key}`] = targets[key].stop;
+    hostCommands[`start-${key}`] = targets[key].start;
+  }
+  const readEnv = (name) => {
     const value = String(env[name] ?? "").trim();
     if (!value) missing.push(name);
     return value;
   };
-  const readOptional = (name, fallback) => {
-    const value = String(env[name] ?? "").trim();
-    return value || fallback;
-  };
-  const targets = {};
-  const hostCommands = {};
-  for (const key of TARGET_KEYS) {
-    targets[key] = Object.freeze({
-      modelId: read(`LOCAL_LLM_MODEL_${key.toUpperCase()}`),
-      label: readOptional(`LOCAL_LLM_LABEL_${key.toUpperCase()}`, TARGET_LABEL_FALLBACKS[key]),
-    });
-    hostCommands[`stop-${key}`] = read(`LOCAL_LLM_CMD_STOP_${key.toUpperCase()}`);
-    hostCommands[`start-${key}`] = read(`LOCAL_LLM_CMD_START_${key.toUpperCase()}`);
-  }
-  const hostUser = read("LOCAL_LLM_HOST_USER");
-  const hostHome = read("LOCAL_LLM_HOST_HOME");
+  const hostUser =
+    String(fileData?.hostUser ?? "").trim() || readEnv("LOCAL_LLM_HOST_USER");
+  const hostHome =
+    String(fileData?.hostHome ?? "").trim() || readEnv("LOCAL_LLM_HOST_HOME");
   if (missing.length > 0) {
     throw new Error(
-      `Local LLM runtime switching is not configured; set ${missing.join(", ")} in .env (see .env.example)`
+      `Local LLM runtime switching is not configured; set ${missing.join(", ")} in config/local-llm.json (see config/local-llm.example.json)`
     );
   }
   return Object.freeze({
@@ -53,12 +137,33 @@ export function loadLocalLlmRuntimeConfig(env = process.env) {
   });
 }
 
+export function saveLocalLlmRuntimeConfig(config, filePath = defaultConfigPath()) {
+  const fileData = {};
+  for (const key of TARGET_KEYS) {
+    const target = config?.targets?.[key];
+    if (!target) continue;
+    const entry = {};
+    for (const field of TARGET_FIELDS) {
+      const value = target[field];
+      if (typeof value === "string" && value.trim()) entry[field] = value;
+    }
+    if (Object.keys(entry).length > 0) fileData[key] = entry;
+  }
+  if (typeof config?.hostUser === "string" && config.hostUser.trim()) {
+    fileData.hostUser = config.hostUser.trim();
+  }
+  if (typeof config?.hostHome === "string" && config.hostHome.trim()) {
+    fileData.hostHome = config.hostHome.trim();
+  }
+  atomicWrite(filePath, `${JSON.stringify(fileData, null, 2)}\n`, 0o644);
+}
+
 let runtimeConfigCache = null;
 
 function getRuntimeConfig() {
   if (!runtimeConfigCache) {
     // Retried on every call until it succeeds, so the dashboard keeps running
-    // (with an unconfigured Local LLM panel) while .env is still missing.
+    // (with an unconfigured Local LLM panel) while the config is still missing.
     runtimeConfigCache = loadLocalLlmRuntimeConfig();
   }
   return runtimeConfigCache;
