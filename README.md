@@ -438,12 +438,11 @@ Copy `.env.example` to `.env` if needed:
 > The Local LLM runtime panel is configured per deployment in `config/local-llm.json`
 > (gitignored; see `config/local-llm.example.json` for the schema). Each entry defines a
 > runtime target with its `/v1/models` model ID, display label, and allowlisted host
-> lifecycle commands. When a required value is missing the dashboard keeps running, but
-> `/api/local-llm/*` answers with a configuration error instead of starting or stopping runtimes.
-
-The three runtime keys are `deepseek`, `qwen`, and `glm`; copy the example and replace
-its placeholder values. JSON fields take precedence over the deprecated `LOCAL_LLM_*`
-environment variables, which fill omitted fields.
+> lifecycle commands. The target keys are `deepseek`, `qwen`, and `glm`; copy the example
+> and repeat its `<target>` block per runtime. When a required value is missing the
+> dashboard keeps running, but `/api/local-llm/*` answers with a configuration
+> error instead of starting or stopping runtimes. JSON fields take precedence over the
+> deprecated `LOCAL_LLM_*` environment variables, which fill omitted fields.
 
 GPU and CPU ECO share authentication and route handling in `server/ecoCommon.js` and
 `server/ecoRoutes.js`; hardware commands remain in `server/eco.js` and `server/cpuEco.js`.
