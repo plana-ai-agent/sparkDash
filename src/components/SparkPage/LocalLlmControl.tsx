@@ -1,229 +1,181 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  fetchLocalLlmSwitchStatus,
-  switchLocalLlmRuntime,
-} from "../../api/client";
+import { fetchLocalLlmSwitchStatus, switchLocalLlmRuntime, reconcileLocalLlmRuntime } from "../../api/client";
 import { requestControlKey, storeControlKey, clearControlKey } from "../../api/controlKey";
-import type { LocalLlmLabels, LocalLlmRuntimeKey, LocalLlmSwitchStatus } from "../../api/types";
+import type { LocalLlmMode, LocalLlmSwitchRequest, LocalLlmSwitchStatus } from "../../api/types";
 import { Panel } from "../ui/Panel";
 import { BotIcon } from "../ui/icons";
 
-const STATUS_POLL_MS = 2000;
+const selectClass = "w-full rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs text-text disabled:opacity-50";
+const buttonClass = "rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
+const modeLabel = (mode: string) => ({ independent: "Independent · 2 heads", linked: "Linked · head + worker", stopped: "Stopped", unknown: "Unknown configuration" })[mode] || mode;
 
-// Fallbacks for before the first status poll resolves; the status endpoint
-// serves the deployment-configured labels from config/local-llm.json.
-const FALLBACK_LABELS: LocalLlmLabels = {
-  deepseek: "DeepSeek",
-  qwen: "Qwen",
-  glm: "GLM",
-};
-
-const TARGET_KEYS: LocalLlmRuntimeKey[] = ["deepseek", "qwen", "glm"];
-
-function runtimeLabel(runtime: LocalLlmSwitchStatus["current"], labels: LocalLlmLabels) {
-  if (runtime === "stopped") return "Stopped";
-  if (runtime === "unknown") return "Unknown";
-  return labels[runtime] ?? FALLBACK_LABELS[runtime];
-}
-
-function phaseLabel(phase: LocalLlmSwitchStatus["phase"]) {
-  const labels: Record<LocalLlmSwitchStatus["phase"], string> = {
-    idle: "Idle",
-    stopping: "Stopping current runtime",
-    starting: "Starting selected runtime",
-    verifying: "Verifying API model ID",
-    "rolling-back": "Restoring previous runtime",
-    "cleaning-up": "Cleaning up failed runtime",
-    complete: "Complete",
-    error: "Failed",
-  };
-  return labels[phase];
-}
-
-export function LocalLlmControl() {
+export function LocalLlmControl({ sparkId }: { sparkId?: string }) {
   const [status, setStatus] = useState<LocalLlmSwitchStatus | null>(null);
-  const [target, setTarget] = useState<LocalLlmRuntimeKey>("deepseek");
+  const [mode, setMode] = useState<LocalLlmMode>("independent");
+  const [selections, setSelections] = useState<Record<string, string>>({});
+  const [linkedRuntime, setLinkedRuntime] = useState("");
   const [requesting, setRequesting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const targetInitialized = useRef(false);
+  const initialized = useRef(false);
+  const revision = useRef(0);
+  const submitting = useRef(false);
 
   const applyStatus = useCallback((next: LocalLlmSwitchStatus) => {
     setStatus(next);
     setLoadError(null);
-    if (!targetInitialized.current) {
-      if (next.current === "deepseek" || next.current === "qwen" || next.current === "glm")
-        setTarget(next.current);
-      targetInitialized.current = true;
+    // Polls must preserve the user's draft selection.
+    if (!initialized.current) {
+      setMode(next.current.mode === "linked" ? "linked" : "independent");
+      setLinkedRuntime(next.current.mode === "linked" ? next.current.runtime
+        : next.runtimes.find((runtime) => runtime.mode === "linked" && !runtime.disabledReason)?.id || "");
+      setSelections(Object.fromEntries(next.nodes.map((node) => [node.id,
+        next.runtimes.find((runtime) => runtime.id === node.runtime && runtime.mode === "independent")?.id
+        || next.runtimes.find((runtime) => runtime.mode === "independent" && runtime.apiNode === node.id && !runtime.disabledReason)?.id || ""])));
+      initialized.current = true;
     }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
+      const started = revision.current;
       try {
         const next = await fetchLocalLlmSwitchStatus();
-        if (!cancelled) applyStatus(next);
+        if (!cancelled && !submitting.current && started === revision.current) applyStatus(next);
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && !submitting.current && started === revision.current)
           setLoadError(error instanceof Error ? error.message : "Runtime status unavailable");
-        }
       } finally {
-        if (!cancelled) timer = setTimeout(poll, STATUS_POLL_MS);
+        if (!cancelled) timer = setTimeout(poll, 2000);
       }
     };
     void poll();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [applyStatus]);
 
-  const switching = requesting || status?.state === "switching";
-  const labels = status?.labels ?? FALLBACK_LABELS;
-  const isCurrentTarget =
-    status?.state === "idle" && status.health === "healthy" && status.current === target;
-  const writesDisabled = status?.writesEnabled === false;
+  const busy = requesting || status?.state === "switching";
+  const disabled = !status || busy || !status.writesEnabled || status.interrupted || Boolean(status.issues.length) || Boolean(loadError);
+  const independentCurrent = status?.current.mode === "independent" || status?.current.mode === "stopped";
+  const healthy = Boolean(status?.nodes.every((node) => node.health === "healthy"));
+  const unchanged = healthy && (mode === "linked"
+    ? status?.current.mode === "linked" && status.current.runtime === linkedRuntime
+    : independentCurrent && status?.nodes.every((node) => node.runtime === selections[node.id]));
+  const selectable = (id: string) => status?.runtimes.some((runtime) => runtime.id === id && !runtime.disabledReason);
+  const completeSelection = mode === "linked" ? selectable(linkedRuntime)
+    : Boolean(status?.nodes.length && status.nodes.every((node) => selectable(selections[node.id])));
 
-  const handleSwitch = useCallback(async () => {
-    if (switching || writesDisabled || isCurrentTarget) return;
-    const current = status ? runtimeLabel(status.current, labels) : "current runtime";
-    if (
-      !window.confirm(
-        `Switch Local LLM from ${current} to ${labels[target]}?\n\nActive inference will be interrupted. If startup fails, sparkDash runs its configured cleanup and recovery policy, which may leave port 8888 stopped without restoring the previous runtime.`
-      )
-    ) {
-      return;
+  const submit = async (selection?: LocalLlmSwitchRequest) => {
+    if (submitting.current || busy || !status?.writesEnabled || (selection && disabled)) return;
+    if (selection) {
+      const affected = "node" in selection ? status.nodes.filter((node) => node.id === selection.node) : status.nodes;
+      const target = "node" in selection ? status.runtimes.find((runtime) => runtime.id === selection.target)?.label
+        : selection.mode === "linked" ? status.runtimes.find((runtime) => runtime.id === selection.runtime)?.label
+          : affected.map((node) => `${node.name}: ${status.runtimes.find((runtime) => runtime.id === selection.selections[node.id])?.label}`).join("\n");
+      if (!window.confirm(`Apply ${target}?\n\nInference on changed nodes (${affected.map((node) => node.name).join(", ")}) will be interrupted. Failed changes follow the configured recovery policy.`)) return;
     }
-
     const key = requestControlKey("sparkDash control key (same key used by ECO mode):");
     if (!key) return;
-
+    submitting.current = true;
+    revision.current++;
     setRequesting(true);
     setLoadError(null);
     try {
-      const result = await switchLocalLlmRuntime(target, key);
+      applyStatus(selection ? await switchLocalLlmRuntime(selection, key) : await reconcileLocalLlmRuntime(key));
       storeControlKey(key);
-      setStatus((previous) => ({
-        ...result,
-        labels: result.labels ?? previous?.labels,
-      }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to start runtime switch";
+      const message = error instanceof Error ? error.message : "Runtime operation failed";
       if (/key/i.test(message)) clearControlKey();
       setLoadError(message);
     } finally {
+      revision.current++;
+      submitting.current = false;
       setRequesting(false);
     }
-  }, [isCurrentTarget, labels, status, switching, target, writesDisabled]);
+  };
 
-  const statusTone =
-    status?.state === "error"
-      ? "bg-danger"
-      : status?.state === "switching"
-        ? "bg-warning"
-        : status?.health === "healthy"
-          ? "bg-success"
-          : "bg-muted";
+  if (status && sparkId && !status.nodes.some((node) => node.id === sparkId)) return null;
 
   return (
-    <Panel
-      title="Local LLM Runtime"
-      icon={<BotIcon />}
-      accent={status?.health === "healthy"}
-      className="md:col-span-2"
-    >
+    <Panel title="Local LLM Runtime" icon={<BotIcon />} accent={healthy} className="md:col-span-2">
       <div className="space-y-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 shrink-0 rounded-full ${statusTone}`} />
-              <span className="text-sm font-semibold text-text-strong">
-                {status ? runtimeLabel(status.current, labels) : "Checking runtime…"}
-              </span>
-              {status?.health === "healthy" && (
-                <span className="rounded bg-success/10 px-1.5 py-0.5 text-[10px] text-success">
-                  Healthy
-                </span>
-              )}
-            </div>
-            <p className="break-all font-mono text-[10px] text-muted">
-              {status?.currentModelId || "No verified model ID"}
-            </p>
-          </div>
-          {status && (
-            <div className="text-right text-[10px] text-muted" aria-live="polite">
-              <div>{phaseLabel(status.phase)}</div>
-              <div>{status.message}</div>
-            </div>
-          )}
+        <div className="flex flex-wrap justify-between gap-2 text-xs" aria-live="polite">
+          <strong className="text-text-strong">{status ? modeLabel(status.current.mode) : "Checking runtimes…"}</strong>
+          <span className="text-muted">{status?.message}</span>
         </div>
-
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-          <label className="block space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-muted">Switch to</span>
-            <select
-              value={target}
-              onChange={(event) => setTarget(event.target.value as LocalLlmRuntimeKey)}
-              disabled={switching}
-              className="w-full rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs text-text outline-none focus:border-accent disabled:opacity-50"
-              aria-label="Local LLM runtime target"
-            >
-              {TARGET_KEYS.map((key) => (
-                <option key={key} value={key}>
-                  {labels[key]}
-                </option>
-              ))}
+        <div className="grid gap-2 sm:grid-cols-2">
+          {status?.nodes.map((node) => (
+            <div key={node.id} className={`rounded-md border p-2 ${node.id === sparkId ? "border-accent" : "border-border"}`}>
+              <div className="flex justify-between gap-2 text-xs"><strong>{node.name}</strong>
+                <span className={node.health === "healthy" ? "text-success" : "text-muted"}>{node.health}</span></div>
+              <div className="break-all text-[11px] text-muted">
+                {status.runtimes.find((runtime) => runtime.id === node.runtime)?.label || "No runtime"}
+                {status.current.mode === "linked" && status.runtimes.find((runtime) => runtime.id === node.runtime)?.apiNode !== node.id && " · worker"}
+              </div>
+              {node.modelId && <div className="break-all font-mono text-[10px] text-muted">{node.modelId} · :{node.port}</div>}
+              {status.progress[node.id] && <div className="mt-1 text-[11px] text-muted">{status.progress[node.id].message}</div>}
+            </div>
+          ))}
+        </div>
+        <label className="block space-y-1 text-[11px] text-muted">
+          <span>Configuration</span>
+          <select aria-label="Runtime configuration" className={selectClass} value={mode} disabled={busy} onChange={(event) => setMode(event.target.value as LocalLlmMode)}>
+            <option value="independent">Independent · 2 heads</option>
+            <option value="linked">Linked · head + worker</option>
+          </select>
+        </label>
+        {mode === "independent" ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {status?.nodes.map((node) => (
+              <div key={node.id} className="space-y-2">
+                <label className="block space-y-1 text-[11px] text-muted">
+                  <span>{node.name} model</span>
+                  <select aria-label={`${node.name} model`} className={selectClass} value={selections[node.id] || ""} disabled={busy}
+                    onChange={(event) => setSelections((previous) => ({ ...previous, [node.id]: event.target.value }))}>
+                    {!selections[node.id] && <option value="">No independent runtime configured</option>}
+                    {status.runtimes.filter((runtime) => runtime.mode === "independent" && runtime.apiNode === node.id).map((runtime) =>
+                      <option key={runtime.id} value={runtime.id} disabled={Boolean(runtime.disabledReason)}>{runtime.label}{runtime.disabledReason && ` · ${runtime.disabledReason}`}</option>)}
+                  </select>
+                </label>
+                {independentCurrent && <button type="button" className={buttonClass}
+                  aria-label={`Switch ${node.name}`} disabled={disabled || !selectable(selections[node.id]) || (node.runtime === selections[node.id] && node.health === "healthy")}
+                  onClick={() => void submit({ node: node.id, target: selections[node.id] })}>Switch this node</button>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <label className="block space-y-1 text-[11px] text-muted">
+            <span>Model shared by both nodes</span>
+            <select aria-label="Linked runtime model" className={selectClass} value={linkedRuntime} disabled={busy} onChange={(event) => setLinkedRuntime(event.target.value)}>
+              {!linkedRuntime && <option value="">No linked runtime configured</option>}
+              {status?.runtimes.filter((runtime) => runtime.mode === "linked").map((runtime) => <option key={runtime.id} value={runtime.id} disabled={Boolean(runtime.disabledReason)}>{runtime.label}{runtime.disabledReason && ` · ${runtime.disabledReason}`}</option>)}
             </select>
           </label>
-          <button
-            type="button"
-            onClick={() => void handleSwitch()}
-            disabled={switching || writesDisabled || isCurrentTarget || !status}
-            className="rounded-md bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {switching ? "Switching…" : isCurrentTarget ? "Currently running" : "Switch runtime"}
-          </button>
-        </div>
-
+        )}
+        <button type="button" className={buttonClass} disabled={disabled || !completeSelection || unchanged}
+          onClick={() => void submit(mode === "linked" ? { mode, runtime: linkedRuntime } : { mode, selections })}>
+          {busy ? "Switching…" : unchanged ? "Currently running" : mode === "linked" ? "Apply linked configuration" : "Apply independent configuration"}
+        </button>
         <p className="text-[10px] leading-relaxed text-muted">
-          This controls the two-node inference runtime on port 8888. After it completes, select the same model in Hermes; existing Hermes sessions are not changed automatically.
+          Independent: each node serves its own model; unchanged nodes keep running. Linked: both nodes serve one model through the head.
+          Client model selections are not changed automatically.
         </p>
-
-        {writesDisabled && (
-          <p className="text-[11px] text-danger">
-            Runtime switching is disabled because the sparkDash control key is not configured.
-          </p>
-        )}
-        {loadError && <p className="text-[11px] text-danger">{loadError}</p>}
-        {status?.error && (
-          <div className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-[11px] text-danger">
-            <div>{status.error}</div>
-            {status.rollback?.attempted && (
-              <div className="mt-1">
-                Rollback: {status.rollback.succeeded ? "previous runtime restored" : status.rollback.error || "failed"}
-              </div>
-            )}
-          </div>
-        )}
-
-        {status?.failureLog && status.failureLog.length > 0 && (
-          <details className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
-            <summary className="cursor-pointer text-[10px] text-danger">Failed switch output</summary>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-danger">
-              {status.failureLog.join("\n")}
-            </pre>
-          </details>
-        )}
-
-        {status?.log && status.log.length > 0 && (
-          <details className="rounded-md border border-border bg-surface-elevated px-3 py-2">
-            <summary className="cursor-pointer text-[10px] text-muted">Lifecycle log</summary>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-muted">
-              {status.log.join("\n")}
-            </pre>
-          </details>
-        )}
+        {status?.interrupted && <div className="space-y-2 text-[11px] text-warning">
+          <p>An unfinished operation was found. Recheck both nodes before switching again.</p>
+          <button type="button" className={buttonClass} disabled={busy || !status.writesEnabled} onClick={() => void submit()}>Reconcile interrupted operation</button>
+        </div>}
+        {status?.writesEnabled === false && <p className="text-[11px] text-danger">Runtime switching requires a configured sparkDash control key.</p>}
+        {loadError && <p role="alert" className="text-[11px] text-danger">{loadError}</p>}
+        {status?.issues.map((issue) => <p key={issue} className="text-[11px] text-danger">{issue}</p>)}
+        {status?.error && <p role="alert" className="text-[11px] text-danger">{status.error}</p>}
+        {status?.recoveries.map((recovery, index) => <p key={index} className="text-[11px] text-muted">
+          {recovery.nodeIds.map((id) => status.nodes.find((node) => node.id === id)?.name || id).join(", ")}: {recovery.succeeded ? "Previous runtime restored" : recovery.error || "Previous runtime was not restored"}
+        </p>)}
+        {status && [["Failed switch output", status.failureLog], ["Lifecycle log", status.log]].map(([title, lines]) =>
+          Array.isArray(lines) && lines.length > 0 && <details key={String(title)} className="rounded-md border border-border px-3 py-2">
+            <summary className="cursor-pointer text-[10px] text-muted">{title}</summary>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-muted">{lines.join("\n")}</pre>
+          </details>)}
       </div>
     </Panel>
   );

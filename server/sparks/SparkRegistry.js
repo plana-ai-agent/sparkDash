@@ -173,6 +173,30 @@ export class SparkRegistry {
     return this._withSecrets(this._sparks[idx]);
   }
 
+  /** Save both runtime roles together; preserve addresses, secrets and unrelated monitoring. */
+  updateRuntimeTopology(assignments) {
+    for (const id of Object.keys(assignments)) {
+      if (!this._sparks.some((spark) => spark.id === id)) throw new Error(`Spark ${id} not found`);
+    }
+    const changed = [];
+    const next = this._sparks.map((spark) => {
+      const assignment = assignments[spark.id];
+      if (!assignment) return spark;
+      if (!["head", "worker"].includes(assignment.role)) throw new Error("Invalid runtime role");
+      const llmPorts = [...spark.llmPorts];
+      if (assignment.port && !llmPorts.includes(assignment.port)) llmPorts.push(assignment.port);
+      const normalized = this._normalizeConfig({ ...spark, llmPorts, role: assignment.role,
+        workerHeadId: assignment.workerHeadId, workerLabel: null });
+      if (JSON.stringify(normalized) !== JSON.stringify(spark)) changed.push(normalized);
+      return normalized;
+    });
+    if (!changed.length) return [];
+    this._save(next);
+    this._sparks = next;
+    for (const spark of changed) this._emit("update", this._withSecrets(spark));
+    return changed.map((spark) => spark.id);
+  }
+
   /** Remove a Spark by ID. Returns removed Spark or null. */
   removeSpark(id) {
     const idx = this._sparks.findIndex((s) => s.id === id);

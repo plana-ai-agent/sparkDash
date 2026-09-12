@@ -7,7 +7,7 @@ import type {
   LlmMetrics,
   LlmDailyResponse,
   LocalLlmSwitchStatus,
-  LocalLlmRuntimeKey,
+  LocalLlmSwitchRequest,
   Settings,
   ShowcaseListResponse,
   ShowcaseSessionState,
@@ -433,13 +433,17 @@ export function fetchLocalLlmSwitchStatus(): Promise<LocalLlmSwitchStatus> {
 }
 
 export function switchLocalLlmRuntime(
-  target: LocalLlmRuntimeKey,
+  selection: LocalLlmSwitchRequest,
   key: string
 ): Promise<LocalLlmSwitchStatus & { success: boolean; started: boolean }> {
   return apiFetch("/api/local-llm/switch", {
     method: "POST",
-    body: JSON.stringify({ target, key }),
+    body: JSON.stringify({ ...selection, key }),
   });
+}
+
+export function reconcileLocalLlmRuntime(key: string): Promise<LocalLlmSwitchStatus> {
+  return apiFetch("/api/local-llm/reconcile", { method: "POST", body: JSON.stringify({ key }) });
 }
 
 // ─── GPU / CPU clock ECO controls ────────────────────────

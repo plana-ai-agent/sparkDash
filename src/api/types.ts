@@ -359,42 +359,41 @@ export interface LlmPosture {
   detail: string;
 }
 
-export type LocalLlmRuntime = LocalLlmRuntimeKey | "stopped" | "unknown";
-export type LocalLlmRuntimeKey = "deepseek" | "qwen" | "glm";
-export type LocalLlmSwitchState = "idle" | "switching" | "error";
+export type LocalLlmMode = "independent" | "linked";
+export type LocalLlmPlan =
+  | { mode: "linked"; runtime: string }
+  | { mode: "independent"; selections: Record<string, string | null> };
+export type LocalLlmSwitchRequest = LocalLlmPlan | { node: string; target: string };
 
-/** Deployment-configured display labels, served by the status endpoint. */
-export interface LocalLlmLabels {
-  deepseek: string;
-  qwen: string;
-  glm: string;
+export interface LocalLlmRuntimeOption {
+  id: string;
+  label: string;
+  modelId: string;
+  nodeIds: string[];
+  apiNode: string;
+  mode: LocalLlmMode;
+  disabledReason?: string | null;
 }
 
 export interface LocalLlmSwitchStatus {
-  state: LocalLlmSwitchState;
-  phase:
-    | "idle"
-    | "stopping"
-    | "starting"
-    | "verifying"
-    | "rolling-back"
-    | "cleaning-up"
-    | "complete"
-    | "error";
-  current: LocalLlmRuntime;
-  currentModelId: string | null;
-  health: "healthy" | "stopped" | "unknown";
-  source: LocalLlmRuntimeKey | null;
-  target: LocalLlmRuntimeKey | null;
+  state: "idle" | "switching" | "error";
+  phase: string;
+  current: LocalLlmPlan | { mode: "unknown" | "stopped"; selections?: Record<string, string | null> };
+  target: LocalLlmPlan | null;
+  nodes: { id: string; name: string; port: number; runtime: string | null; modelId: string | null;
+    health: "healthy" | "degraded" | "stopped" | "unknown" }[];
+  runtimes: LocalLlmRuntimeOption[];
+  progress: Record<string, { phase: string; message: string; error: string | null }>;
+  recoveries: { nodeIds: string[]; attempted: boolean; succeeded: boolean; error: string | null }[];
+  issues: string[];
+  interrupted: boolean;
   startedAt: number | null;
   finishedAt: number | null;
   message: string;
   error: string | null;
-  rollback: { attempted: boolean; succeeded: boolean; error: string | null } | null;
   failureLog: string[];
   log: string[];
   writesEnabled: boolean;
-  labels?: LocalLlmLabels;
 }
 
 // ─── ComfyUI metrics ─────────────────────────────────────

@@ -3,6 +3,7 @@ dist/
 .env
 sparks.json
 config/local-llm.json
+config/local-llm-operation.json
 config/sparks-secrets.json
 config/.secrets-key
 config/eco_key.txt

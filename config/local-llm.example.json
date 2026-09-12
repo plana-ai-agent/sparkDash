@@ -1,10 +1,41 @@
 {
+  "version": 2,
   "hostUser": "<host-user>",
   "hostHome": "/home/<host-user>",
-  "<target>": {
-    "modelId": "<model-id>",
-    "label": "<display-label>",
-    "start": "<start-command>",
-    "stop": "<stop-command>"
+  "nodes": {
+    "node-1": { "port": 8888 },
+    "node-2": { "port": 8888 }
+  },
+  "runtimes": {
+    "node-1-model": {
+      "label": "<first-node-model-label>",
+      "modelId": "<first-node-api-model-id>",
+      "apiNode": "node-1",
+      "containers": { "node-1": "first-node-container" },
+      "preflight": "<non-destructive-prerequisite-check-command>",
+      "start": "<first-node-start-command>",
+      "stop": "<first-node-stop-command>"
+    },
+    "node-2-model": {
+      "label": "<second-node-model-label>",
+      "modelId": "<second-node-api-model-id>",
+      "apiNode": "node-2",
+      "containers": { "node-2": "second-node-container" },
+      "preflight": "<non-destructive-prerequisite-check-command>",
+      "start": "<second-node-start-command>",
+      "stop": "<second-node-stop-command>"
+    },
+    "linked-model": {
+      "label": "<linked-model-label>",
+      "modelId": "<head-api-model-id>",
+      "apiNode": "node-1",
+      "containers": { "node-1": "linked-head-container", "node-2": "linked-worker-container" },
+      "preflight": "<non-destructive-prerequisite-check-command-for-both-nodes>",
+      "start": "<start-both-nodes-command>",
+      "stop": "<stop-both-nodes-command>",
+      "startupTimeoutMs": 1800000,
+      "stopTimeoutMs": 90000,
+      "rollback": true
+    }
   }
 }

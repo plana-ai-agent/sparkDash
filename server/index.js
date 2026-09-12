@@ -321,7 +321,14 @@ app.get("/api/health", (_req, res) => {
   res.json(inspectHealth(process.env.BIND_HOST || "127.0.0.1"));
 });
 
-const localLlmSwitchManager = new LocalLlmSwitchManager();
+const localLlmSwitchManager = new LocalLlmSwitchManager({
+  getSpark: (id) => registry.getSpark(id),
+  onTopology: (roles) => {
+    for (const id of registry.updateRuntimeTopology(roles)) {
+      monitors.get(id)?.updateConfig(registry.getSpark(id));
+    }
+  },
+});
 registerLocalLlmRoutes(app, {
   manager: localLlmSwitchManager,
   keyOk: ecoKeyOk,

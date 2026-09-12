@@ -1,817 +1,385 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { PassThrough } from "node:stream";
-import { EventEmitter } from "node:events";
 import test from "node:test";
-import {
-  LocalLlmSwitchManager,
-  classifyProbe,
-  probeLocalLlmRuntime,
-  registerLocalLlmRoutes,
-  validateLocalLlmTarget,
-} from "../../localLlmSwitch.js";
-import { loadLocalLlmRuntimeConfig } from "../../localLlmConfig.js";
-import { buildHostCommandInvocation, createHostCommandRunner, streamLines } from "../../localLlmCommands.js";
+import { LocalLlmSwitchManager, inspectRuntimes, registerLocalLlmRoutes, validateSwitchRequest } from "../../localLlmSwitch.js";
+import { normalizeRuntimeConfig, publicRuntimeConfig } from "../../localLlmConfig.js";
 
-// Deployment-private values live in config/local-llm.json. The loader keeps a
-// LOCAL_LLM_* env fallback (file wins per key, env fills omitted fields), so
-// these tests run from fixture env vars with the config file redirected away.
-// Config-loader tests below override LOCAL_LLM_CONFIG_PATH per test.
-process.env.LOCAL_LLM_CONFIG_PATH = path.join(
-  os.tmpdir(),
-  `sparkdash-local-llm-config-absent-${process.pid}.json`
-);
-const FIXTURE_ENV = {
-  LOCAL_LLM_HOST_USER: "sparkdash-test",
-  LOCAL_LLM_HOST_HOME: "/home/sparkdash-test",
-  LOCAL_LLM_MODEL_DEEPSEEK: "fixture-deepseek-model",
-  LOCAL_LLM_MODEL_QWEN: "fixture-qwen-model",
-  LOCAL_LLM_MODEL_GLM: "fixture-glm-model",
-  LOCAL_LLM_LABEL_DEEPSEEK: "Fixture DeepSeek Label",
-  LOCAL_LLM_LABEL_GLM: "Fixture GLM Label",
-  LOCAL_LLM_CMD_STOP_DEEPSEEK: "cd /opt/sparkdash-fixtures/deepseek && exec ./stop.sh",
-  LOCAL_LLM_CMD_START_DEEPSEEK: "cd /opt/sparkdash-fixtures/deepseek && exec ./start.sh",
-  LOCAL_LLM_CMD_STOP_QWEN: "cd /opt/sparkdash-fixtures/qwen && exec ./start.sh stop",
-  LOCAL_LLM_CMD_START_QWEN: "cd /opt/sparkdash-fixtures/qwen && exec ./start.sh serve",
-  LOCAL_LLM_CMD_STOP_GLM:
-    "cd /opt/sparkdash-fixtures/glm && exec env WORKER_SSH=fixture-worker CONTAINER_HEAD=fixture-head CONTAINER_WORKER=fixture-worker ./stop.sh",
-  LOCAL_LLM_CMD_START_GLM:
-    "cd /opt/sparkdash-fixtures/glm && exec env HEAD_IP=10.0.0.10 WORKER_SSH=fixture-worker WORKER_IP=10.0.0.11 ./start.sh",
-};
-for (const [name, value] of Object.entries(FIXTURE_ENV)) {
-  process.env[name] = value;
+function configInput() {
+  const runtime = (id, nodeIds) => ({ label: `Model ${id}`, modelId: id, apiNode: nodeIds[0],
+    containers: Object.fromEntries(nodeIds.map((node) => [node, `${id}-${node}`])),
+    start: `start-${id}`, stop: `stop-${id}`, startupTimeoutMs: 1000, stopTimeoutMs: 1000 });
+  return { version: 2, hostUser: "fixture", hostHome: "/home/fixture", nodes: { a: {}, b: {} }, runtimes: {
+    a1: runtime("a1", ["a"]), a2: runtime("a2", ["a"]), b1: runtime("b1", ["b"]), b2: runtime("b2", ["b"]),
+    joined: runtime("joined", ["a", "b"]), joined2: runtime("joined2", ["a", "b"]),
+  } };
 }
+const pair = (a = "a1", b = "b1") => ({ mode: "independent", selections: { a, b } });
+const linked = (runtime = "joined") => ({ mode: "linked", runtime });
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 
-const DEEPSEEK_ID = FIXTURE_ENV.LOCAL_LLM_MODEL_DEEPSEEK;
-const QWEN_ID = FIXTURE_ENV.LOCAL_LLM_MODEL_QWEN;
-const GLM_ID = FIXTURE_ENV.LOCAL_LLM_MODEL_GLM;
-
-function reachable(modelId) {
-  return { reachable: true, modelId };
-}
-
-function stopped() {
-  return { reachable: false, modelId: null };
-}
-
-function makeProbe(sequence) {
-  const values = [...sequence];
-  return async () => {
-    assert.ok(values.length > 0, "probe sequence exhausted");
-    return values.shift();
+function fixture(initial = ["a1", "b1"], input = configInput()) {
+  const config = normalizeRuntimeConfig(input);
+  let clock = 0;
+  let record = null;
+  const h = { config, calls: [], roles: [], observations: Object.fromEntries(["a", "b"].map((id) =>
+    [id, { reachable: false, modelId: null, running: [], error: null }])), onRun: null, onObserve: null, onCheck: null };
+  h.activate = (id) => {
+    const runtime = config.runtimes[id];
+    for (const node of runtime.nodeIds) {
+      const running = h.observations[node].running;
+      if (!running.includes(runtime.containers[node])) running.push(runtime.containers[node]);
+    }
+    Object.assign(h.observations[runtime.apiNode], { reachable: true, modelId: runtime.modelId });
   };
-}
-
-function makeManager({ probes, failCommands = new Map(), runCommand, delay, maxStopPolls, disableRollbackTargets } = {}) {
-  const commands = [];
-  const runner =
-    runCommand ||
-    (async (command, { onLine } = {}) => {
-      commands.push(command);
-      onLine?.(`${command} complete`);
-      if (failCommands.has(command)) throw new Error(failCommands.get(command));
-    });
-  const manager = new LocalLlmSwitchManager({
-    probeRuntime: makeProbe(probes),
-    runCommand: runner,
-    now: (() => {
-      let value = 1000;
-      return () => value++;
-    })(),
-    delay: delay || (async () => {}),
-    maxStopPolls,
-    ...(disableRollbackTargets ? { disableRollbackTargets } : {}),
-  });
-  return { manager, commands };
-}
-
-test("host command runner launches the allowlisted command and propagates output and failures", async () => {
-  for (const exitCode of [0, 7]) {
-    const lines = [];
-    const child = Object.assign(new EventEmitter(), {
-      stdout: new PassThrough(), stderr: new PassThrough(),
-    });
-    const run = createHostCommandRunner((file, args, options) => {
-      assert.equal(file, "/usr/bin/nsenter");
-      assert.equal(args.at(-1), FIXTURE_ENV.LOCAL_LLM_CMD_START_QWEN);
-      assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]);
-      queueMicrotask(() => {
-        child.stdout.end("starting\n");
-        child.stderr.end("diagnostic\n");
-        setImmediate(() => child.emit("close", exitCode, null));
-      });
-      return child;
-    });
-    const operation = run("start-qwen", { onLine: (line) => lines.push(line) });
-    if (exitCode) await assert.rejects(operation, /exit 7/);
-    else await operation;
-    assert.deepEqual(lines, ["starting", "diagnostic"]);
-  }
-  await assert.rejects(createHostCommandRunner()("toString"), /allowlisted/);
-  await assert.rejects(createHostCommandRunner()("shell"), /allowlisted/);
-});
-
-test("host runner propagates synchronous process creation errors", async () => {
-  const run = createHostCommandRunner(() => { throw new Error("fixture process failure"); });
-  await assert.rejects(run("start-qwen"), /fixture process failure/);
-});
-
-test("overlong unterminated lifecycle output is redacted as one bounded line", async () => {
-  const stream = new PassThrough();
-  const lines = [];
-  streamLines(stream, (line) => lines.push(line));
-  const ended = new Promise((resolve) => stream.once("end", resolve));
-  stream.end("x".repeat(2001));
-  await ended;
-  assert.deepEqual(lines, ["[redacted overlong output]"]);
-});
-
-test("overlong unterminated secret lines cannot leak across the log fragment boundary", async () => {
-  const prefix = "boundary-prefix-";
-  const output = `${prefix}${"x".repeat(499 - prefix.length)}Authorization: Bearer boundary-secret`;
-  const { manager } = makeManager({
-    probes: [stopped(), stopped(), stopped()],
-    runCommand: async (command, { onLine }) => {
-      if (command !== "start-qwen") return;
-      const stream = new PassThrough();
-      streamLines(stream, onLine);
-      const ended = new Promise((resolve) => stream.once("end", resolve));
-      stream.end(output);
-      await ended;
-      throw new Error("qwen boot failed");
+  h.deactivate = (id) => {
+    const runtime = config.runtimes[id];
+    for (const node of runtime.nodeIds) h.observations[node].running = h.observations[node].running.filter((name) => name !== runtime.containers[node]);
+    const api = h.observations[runtime.apiNode];
+    if (api.modelId === runtime.modelId) Object.assign(api, { reachable: false, modelId: null });
+  };
+  initial.forEach(h.activate);
+  h.store = {
+    read: () => record,
+    acquire: (target) => {
+      if (record) throw Object.assign(new Error("Unfinished operation"), { code: "BUSY" });
+      return record = { id: "operation", pid: process.pid, target };
     },
-  });
-
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  for (const log of [status.log, status.failureLog]) {
-    assert.equal(log.some((line) => line.includes(prefix)), false);
-    assert.equal(log.some((line) => line.includes("boundary-secret")), false);
-  }
-});
-
-test("host lifecycle invocation clears container environment before running as hermes", () => {
-  const invocation = buildHostCommandInvocation("start-qwen");
-  assert.equal(invocation.file, "/usr/bin/nsenter");
-  const envIndex = invocation.args.indexOf("/usr/bin/env");
-  assert.ok(envIndex > 0);
-  assert.deepEqual(invocation.args.slice(envIndex, envIndex + 6), [
-    "/usr/bin/env",
-    "-i",
-    "HOME=/home/sparkdash-test",
-    "USER=sparkdash-test",
-    "LOGNAME=sparkdash-test",
-    "SHELL=/bin/bash",
-  ]);
-  assert.ok(invocation.args.includes("PATH=/home/sparkdash-test/.local/bin:/usr/local/cuda/bin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"));
-  assert.equal(invocation.args.includes("PORT=5555"), false);
-  assert.match(invocation.args.at(-1), /sparkdash-fixtures\/qwen/);
-  assert.throws(() => buildHostCommandInvocation("shell"), /allowlisted/);
-});
-
-test("classifyProbe distinguishes all exact IDs, stopped, and unknown", () => {
-  const { targets } = loadLocalLlmRuntimeConfig(process.env);
-  assert.deepEqual(classifyProbe(reachable(DEEPSEEK_ID), targets), {
-    runtime: "deepseek",
-    modelId: DEEPSEEK_ID,
-    health: "healthy",
-  });
-  assert.deepEqual(classifyProbe(reachable(QWEN_ID), targets), {
-    runtime: "qwen",
-    modelId: QWEN_ID,
-    health: "healthy",
-  });
-  assert.deepEqual(classifyProbe(reachable(GLM_ID), targets), {
-    runtime: "glm",
-    modelId: GLM_ID,
-    health: "healthy",
-  });
-  assert.deepEqual(classifyProbe(stopped(), targets), {
-    runtime: "stopped",
-    modelId: null,
-    health: "stopped",
-  });
-  assert.deepEqual(classifyProbe(reachable("some-other-model"), targets), {
-    runtime: "unknown",
-    modelId: "some-other-model",
-    health: "unknown",
-  });
-});
-
-test("probe treats malformed live responses as unknown and only connection refusal as stopped", async () => {
-  assert.deepEqual(
-    await probeLocalLlmRuntime(async () => ({
-      ok: true,
-      json: async () => {
-        throw new SyntaxError("invalid json");
-      },
-    })),
-    { reachable: true, modelId: null }
-  );
-
-  const reset = new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
-  assert.deepEqual(
-    await probeLocalLlmRuntime(async () => {
-      throw reset;
-    }),
-    { reachable: true, modelId: null }
-  );
-
-  const refused = new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
-  assert.deepEqual(
-    await probeLocalLlmRuntime(async () => {
-      throw refused;
-    }),
-    { reachable: false, modelId: null }
-  );
-});
-
-test("label overrides come from the environment with neutral fallbacks", () => {
-  const labels = loadLocalLlmRuntimeConfig(process.env).targets;
-  assert.equal(labels.deepseek.label, "Fixture DeepSeek Label");
-  assert.equal(labels.qwen.label, "Qwen");
-  assert.equal(labels.glm.label, "Fixture GLM Label");
-  assert.equal(labels.deepseek.modelId, "fixture-deepseek-model");
-});
-
-function withConfigPath(configPath, run) {
-  const previous = process.env.LOCAL_LLM_CONFIG_PATH;
-  process.env.LOCAL_LLM_CONFIG_PATH = configPath;
-  try {
-    return run();
-  } finally {
-    process.env.LOCAL_LLM_CONFIG_PATH = previous;
-  }
+    release: (owner) => { assert.equal(owner.id, record.id); record = null; },
+    ownerAlive: () => false,
+  };
+  h.executor = {
+    observe: async () => { await h.onObserve?.(); return structuredClone(h.observations); },
+    checkNode: async (node) => { await h.onCheck?.(node); },
+    run: async (runtime, action, onLine) => {
+      h.calls.push(`${runtime.id}:${action}`);
+      onLine?.(`${action} fixture`);
+      if (await h.onRun?.(runtime.id, action)) return;
+      if (action === "start") h.activate(runtime.id);
+      if (action === "stop") h.deactivate(runtime.id);
+    },
+  };
+  h.manager = new LocalLlmSwitchManager({ getConfig: () => config, getSpark: (id) => ({ id, name: id }),
+    executor: h.executor, store: h.store, now: () => clock, delay: async (ms) => { clock += ms; }, pollIntervalMs: 100,
+    onTopology: (roles) => { h.roles.push(roles); } });
+  h.switch = async (selection) => { await h.manager.beginSwitch(selection); return h.manager.waitForIdle(); };
+  h.mutations = () => h.calls.filter((call) => !call.endsWith(":preflight"));
+  return h;
 }
 
-function tempConfigPath() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-llm-cfg-")), "local-llm.json");
-}
-
-test("config file supplies targets and host identity, env fills omitted fields", () => {
-  const configPath = tempConfigPath();
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      hostUser: "cfg-user",
-      hostHome: "/home/cfg-user",
-      deepseek: { modelId: "file-deepseek-model" },
-      glm: {
-        modelId: "file-glm-model",
-        label: "File GLM Label",
-        start: "cd /opt/file-glm && exec ./start.sh",
-        stop: "cd /opt/file-glm && exec ./stop.sh",
-      },
-    })
-  );
-  const warnings = [];
-  const originalWarn = console.warn;
-  console.warn = (message) => warnings.push(String(message));
-  let config;
-  try {
-    config = withConfigPath(configPath, () => loadLocalLlmRuntimeConfig(process.env));
-  } finally {
-    console.warn = originalWarn;
-    fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
-  }
-  assert.equal(config.hostUser, "cfg-user");
-  assert.equal(config.hostHome, "/home/cfg-user");
-  assert.equal(config.targets.glm.modelId, "file-glm-model");
-  assert.equal(config.targets.glm.label, "File GLM Label");
-  assert.equal(config.targets.glm.start, "cd /opt/file-glm && exec ./start.sh");
-  assert.equal(config.targets.glm.stop, "cd /opt/file-glm && exec ./stop.sh");
-  // The file omits deepseek's label/commands — env fallback fills them.
-  assert.equal(config.targets.deepseek.modelId, "file-deepseek-model");
-  assert.equal(config.targets.deepseek.label, "Fixture DeepSeek Label");
-  assert.equal(config.targets.deepseek.start, FIXTURE_ENV.LOCAL_LLM_CMD_START_DEEPSEEK);
-  // qwen has no file entry at all and loads from the (deprecated) env fallback.
-  assert.equal(config.targets.qwen.modelId, QWEN_ID);
-  assert.ok(warnings.some((line) => line.includes("qwen") && line.includes("deprecated")));
+test("independent to linked stops both models before starting and publishes a head/worker pair", async () => {
+  const h = fixture();
+  const stoppedA = deferred();
+  let sawOtherStop = false;
+  h.onRun = async (id, action) => {
+    if (id === "a1" && action === "stop") await stoppedA.promise;
+    if (id === "b1" && action === "stop") { sawOtherStop = true; stoppedA.resolve(); }
+    if (id === "joined" && action === "start") assert.deepEqual(h.observations.a.running.concat(h.observations.b.running), []);
+  };
+  const result = await h.switch(linked());
+  assert.equal(sawOtherStop, true);
+  assert.equal(result.state, "idle");
+  assert.deepEqual(result.current, linked());
+  assert.equal(h.roles.at(-1).a.role, "head");
+  assert.deepEqual(h.roles.at(-1).b, { role: "worker", workerHeadId: "a" });
+  assert.equal(h.store.read(), null);
 });
 
-test("unconfigured deployments fail pointing at config/local-llm.json", () => {
-  assert.throws(
-    () => loadLocalLlmRuntimeConfig({}),
-    /set .* in config\/local-llm\.json \(see config\/local-llm\.example\.json\)/
-  );
+test("linked to independent starts both selected models concurrently after both containers stop", async () => {
+  const h = fixture(["joined"]);
+  const aStarted = deferred();
+  h.onRun = async (id, action) => {
+    if (id === "a1" && action === "start") await aStarted.promise;
+    if (id === "b2" && action === "start") aStarted.resolve();
+  };
+  const result = await h.switch(pair("a1", "b2"));
+  assert.deepEqual(result.current, pair("a1", "b2"));
+  assert.deepEqual(h.mutations(), ["joined:stop", "a1:start", "b2:start"]);
+  assert.equal(h.roles.at(-1).a.role, "head");
+  assert.equal(h.roles.at(-1).b.role, "head");
 });
 
-test("invalid config JSON fails with a readable error", () => {
-  const configPath = tempConfigPath();
-  fs.writeFileSync(configPath, "{ not json");
-  assert.throws(
-    () => withConfigPath(configPath, () => loadLocalLlmRuntimeConfig({})),
-    /config\/local-llm\.json is not valid JSON/
-  );
-  fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+test("one node switch leaves the peer running", async () => {
+  const h = fixture();
+  const result = await h.switch({ node: "b", target: "b2" });
+  assert.deepEqual(h.mutations(), ["b1:stop", "b2:start"]);
+  assert.deepEqual(result.current, pair("a1", "b2"));
 });
 
-test("config file with unknown keys is rejected", () => {
-  const configPath = tempConfigPath();
-  fs.writeFileSync(
-    configPath,
-    JSON.stringify({
-      hostUser: "cfg-user",
-      hostHome: "/home/cfg-user",
-      glm: {
-        modelId: "file-glm-model",
-        start: "cd /opt/file-glm && exec ./start.sh",
-        stop: "cd /opt/file-glm && exec ./stop.sh",
-      },
-      mistral: { modelId: "not-a-known-target" },
-    })
-  );
-  assert.throws(
-    () => withConfigPath(configPath, () => loadLocalLlmRuntimeConfig({})),
-    /unknown keys: mistral/
-  );
-  fs.rmSync(path.dirname(configPath), { recursive: true, force: true });
+test("batch independent switch skips unchanged nodes", async () => {
+  const h = fixture();
+  await h.switch(pair("a2", "b1"));
+  assert.deepEqual(h.mutations(), ["a1:stop", "a2:start"]);
 });
 
-test("target validation admits only the fixed deepseek, qwen, and glm enum", () => {
-  assert.equal(validateLocalLlmTarget("deepseek"), "deepseek");
-  assert.equal(validateLocalLlmTarget("qwen"), "qwen");
-  assert.equal(validateLocalLlmTarget("glm"), "glm");
-  for (const value of ["", "GLM", "fixture-glm-model", "deepseek; rm -rf /", null, 3]) {
-    assert.throws(() => validateLocalLlmTarget(value), /target must be deepseek, qwen, or glm/);
-  }
-});
-
-test("glm host commands pass the configured dual-node env through the env -i boundary", () => {
-  const boundaryBeforeEnv = [
-    "/usr/sbin/runuser",
-    "-u",
-    "sparkdash-test",
-    "--",
-  ];
-  for (const command of ["start-glm", "stop-glm"]) {
-    const invocation = buildHostCommandInvocation(command);
-    assert.equal(invocation.file, "/usr/bin/nsenter");
-    const envIndex = invocation.args.indexOf("/usr/bin/env");
-    assert.ok(envIndex > 0);
-    assert.deepEqual(invocation.args.slice(envIndex - 4, envIndex), boundaryBeforeEnv);
-    assert.match(invocation.args.at(-1), /^cd \/opt\/sparkdash-fixtures\/glm && exec env /);
-  }
-
-  const startCommand = buildHostCommandInvocation("start-glm").args.at(-1);
-  assert.match(
-    startCommand,
-    / env HEAD_IP=10\.0\.0\.10 WORKER_SSH=fixture-worker WORKER_IP=10\.0\.0\.11 \.\/start\.sh$/
-  );
-
-  const stopCommand = buildHostCommandInvocation("stop-glm").args.at(-1);
-  assert.match(
-    stopCommand,
-    / env WORKER_SSH=fixture-worker CONTAINER_HEAD=fixture-head CONTAINER_WORKER=fixture-worker \.\/stop\.sh$/
-  );
-
-  assert.throws(() => buildHostCommandInvocation("start-glm-extra"), /allowlisted/);
-});
-
-test("unknown service on port 8888 is rejected without lifecycle commands", async () => {
-  const { manager, commands } = makeManager({ probes: [reachable("rogue-model")] });
-  await assert.rejects(
-    manager.beginSwitch("qwen"),
-    (error) => error?.code === "UNSAFE_STATE" && /unknown service/.test(error.message)
-  );
-  assert.deepEqual(commands, []);
-});
-
-test("same-target healthy switch is an idempotent no-op", async () => {
-  const { manager, commands } = makeManager({ probes: [reachable(DEEPSEEK_ID)] });
-  const result = await manager.beginSwitch("deepseek");
+test("same healthy configuration is a command-free no-op and still corrects stale roles", async () => {
+  const h = fixture();
+  const result = await h.manager.beginSwitch(pair());
   assert.equal(result.started, false);
-  assert.equal(result.status.state, "idle");
-  assert.equal(result.status.current, "deepseek");
-  assert.deepEqual(commands, []);
+  assert.deepEqual(h.calls, []);
+  assert.equal(h.roles.length, 1);
+  assert.equal(h.store.read(), null);
 });
 
-test("only one switch may be in flight", async () => {
-  let release;
-  const blocker = new Promise((resolve) => {
-    release = resolve;
-  });
-  const { manager } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), stopped(), reachable(QWEN_ID)],
-    runCommand: async () => blocker,
-  });
-  const first = await manager.beginSwitch("qwen");
-  assert.equal(first.started, true);
-  await assert.rejects(manager.beginSwitch("deepseek"), (error) => error?.code === "BUSY");
-  release();
-  await manager.waitForIdle();
+test("independent failures restore only the failed node and retain a successful peer change", async () => {
+  const h = fixture();
+  h.onRun = (id, action) => { if (id === "a2" && action === "start") { h.activate(id); throw new Error("fixture startup failure"); } };
+  const result = await h.switch(pair("a2", "b2"));
+  assert.equal(result.state, "error");
+  assert.deepEqual(result.current, pair("a1", "b2"));
+  assert.equal(h.calls.includes("b2:stop"), false);
+  assert.equal(result.recoveries[0].succeeded, true);
+  assert.deepEqual(result.recoveries[0].nodeIds, ["a"]);
 });
 
-test("stale status refresh cannot overwrite a switch that started during its probe", async () => {
-  let resolveRefresh;
-  const refreshProbe = new Promise((resolve) => {
-    resolveRefresh = resolve;
-  });
-  let releaseCommand;
-  const commandBlocker = new Promise((resolve) => {
-    releaseCommand = resolve;
-  });
-  const laterProbes = [stopped(), stopped(), reachable(QWEN_ID)];
-  let probeCalls = 0;
-  const manager = new LocalLlmSwitchManager({
-    probeRuntime: async () => {
-      probeCalls += 1;
-      if (probeCalls === 1) return refreshProbe;
-      assert.ok(laterProbes.length > 0, "probe sequence exhausted");
-      return laterProbes.shift();
-    },
-    runCommand: async () => commandBlocker,
-    delay: async () => {},
-  });
-
-  const refresh = manager.getStatus();
-  assert.equal(probeCalls, 1);
-  const started = await manager.beginSwitch("qwen");
-  assert.equal(started.status.state, "switching");
-
-  resolveRefresh(reachable(DEEPSEEK_ID));
-  const staleStatus = await refresh;
-  assert.equal(staleStatus.state, "switching");
-  assert.equal(staleStatus.current, "stopped");
-  assert.equal((await manager.getStatus({ refresh: false })).state, "switching");
-
-  releaseCommand();
-  await manager.waitForIdle();
+test("failed linked startup cleans up both members and restores the original independent pair", async () => {
+  const h = fixture();
+  h.onRun = (id, action) => { if (id === "joined" && action === "start") { h.activate(id); throw new Error("joined failed"); } };
+  const result = await h.switch(linked());
+  assert.equal(result.state, "error");
+  assert.deepEqual(result.current, pair());
+  assert.deepEqual(h.mutations(), ["a1:stop", "b1:stop", "joined:start", "joined:stop", "a1:start", "b1:start"]);
+  assert.equal(result.recoveries[0].succeeded, true);
 });
 
-test("stale status refresh cannot overwrite a completed same-target no-op", async () => {
-  let resolveRefresh;
-  const refreshProbe = new Promise((resolve) => {
-    resolveRefresh = resolve;
-  });
-  let probeCalls = 0;
-  const manager = new LocalLlmSwitchManager({
-    probeRuntime: async () => {
-      probeCalls += 1;
-      return probeCalls === 1 ? refreshProbe : reachable(DEEPSEEK_ID);
-    },
-    delay: async () => {},
-  });
-
-  const refresh = manager.getStatus();
-  assert.equal(probeCalls, 1);
-  const noOp = await manager.beginSwitch("deepseek");
-  assert.equal(noOp.started, false);
-  resolveRefresh(stopped());
-
-  const staleStatus = await refresh;
-  assert.equal(staleStatus.state, "idle");
-  assert.equal(staleStatus.phase, "complete");
-  assert.equal(staleStatus.current, "deepseek");
-  assert.equal(staleStatus.health, "healthy");
-  assert.equal(staleStatus.message, "Fixture DeepSeek Label is already healthy");
+test("failed independent startup while leaving linked mode restores the original linked runtime", async () => {
+  const h = fixture(["joined"]);
+  h.onRun = (id, action) => { if (id === "b1" && action === "start") throw new Error("b1 failed"); };
+  const result = await h.switch(pair());
+  assert.deepEqual(result.current, linked());
+  assert.equal(result.recoveries[0].succeeded, true);
+  assert.ok(h.calls.indexOf("joined:start") > h.calls.indexOf("a1:stop"));
 });
 
-test("stop wait terminates and reports the still-running source as restored", async () => {
-  let delays = 0;
-  const { manager, commands } = makeManager({
-    probes: [
-      reachable(DEEPSEEK_ID),
-      reachable(DEEPSEEK_ID),
-      reachable(DEEPSEEK_ID),
-      reachable(DEEPSEEK_ID),
-    ],
-    maxStopPolls: 2,
-    delay: async () => {
-      delays += 1;
-    },
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-deepseek", "stop-qwen"]);
-  assert.equal(delays, 1);
-  assert.equal(status.state, "error");
-  assert.match(status.error, /timed out waiting for port 8888/);
-  assert.equal(status.current, "deepseek");
-  assert.deepEqual(status.rollback, { attempted: true, succeeded: true, error: null });
+test("rollback-disabled target is cleaned up but does not restart previous runtimes", async () => {
+  const input = configInput(); input.runtimes.joined.rollback = false;
+  const h = fixture(undefined, input);
+  h.onRun = (id, action) => { if (id === "joined" && action === "start") { h.activate(id); throw new Error("failed"); } };
+  const result = await h.switch(linked());
+  assert.equal(result.current.mode, "stopped");
+  assert.equal(result.recoveries[0].attempted, false);
+  assert.equal(h.calls.includes("a1:start"), false);
 });
 
-test("successful switch waits for the source API to stop before starting the target", async () => {
-  let delays = 0;
-  const { manager, commands } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), reachable(DEEPSEEK_ID), stopped(), reachable(QWEN_ID)],
-    delay: async () => {
-      delays += 1;
-    },
-  });
-  const result = await manager.beginSwitch("qwen");
-  assert.equal(result.started, true);
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-deepseek", "start-qwen"]);
-  assert.equal(delays, 1);
-  assert.equal(status.state, "idle");
-  assert.equal(status.phase, "complete");
-  assert.equal(status.current, "qwen");
-  assert.equal(status.currentModelId, QWEN_ID);
+test("unknown worker state blocks the whole operation before any stop", async () => {
+  const h = fixture(); h.observations.b.error = "SSH failed";
+  await assert.rejects(h.manager.beginSwitch(linked()), /cannot inspect/);
+  assert.deepEqual(h.calls, []);
+  assert.equal(h.store.read(), null);
 });
 
-test("wrong model ID after startup is failure, never success", async () => {
-  const { manager } = makeManager({
-    probes: [stopped(), stopped(), reachable("wrong-model"), stopped()],
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.equal(status.state, "error");
-  assert.match(status.error, new RegExp(`expected ${QWEN_ID}`));
-  assert.equal(status.current, "stopped");
-});
-
-test("failed target startup waits for API release before restoring the known source", async () => {
-  const { manager, commands } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), stopped(), stopped(), reachable(DEEPSEEK_ID)],
-    failCommands: new Map([["start-qwen", "qwen boot failed"]]),
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-deepseek", "start-qwen", "stop-qwen", "start-deepseek"]);
-  assert.equal(status.state, "error");
-  assert.equal(status.current, "deepseek");
-  assert.deepEqual(status.rollback, { attempted: true, succeeded: true, error: null });
-  assert.match(status.error, /qwen boot failed/);
-});
-
-test("cleanup timeout skips source restart and reports rollback failure", async () => {
-  const { manager, commands } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), stopped(), reachable(QWEN_ID), reachable(QWEN_ID)],
-    failCommands: new Map([["start-qwen", "qwen boot failed"]]),
-    maxStopPolls: 2,
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-deepseek", "start-qwen", "stop-qwen"]);
-  assert.equal(status.current, "qwen");
-  assert.equal(status.rollback.attempted, true);
-  assert.equal(status.rollback.succeeded, false);
-  assert.match(status.rollback.error, /timed out waiting for port 8888/);
-  assert.equal(status.message, "Switch and rollback failed; manual recovery is required");
-});
-
-test("unknown cleanup state skips source restart and reports rollback failure", async () => {
-  const { manager, commands } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), stopped(), reachable("rogue-model")],
-    failCommands: new Map([["start-qwen", "qwen boot failed"]]),
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-deepseek", "start-qwen", "stop-qwen"]);
-  assert.equal(status.current, "unknown");
-  assert.equal(status.rollback.attempted, true);
-  assert.equal(status.rollback.succeeded, false);
-  assert.match(status.rollback.error, /unknown or unresponsive service/);
-});
-
-test("wrong target verification remains visible when cleanup command fails", async () => {
-  const wrongModelId = "rogue-target-model";
-  const { manager, commands } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), stopped(), reachable(wrongModelId)],
-    failCommands: new Map([["stop-qwen", "cleanup failed"]]),
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-deepseek", "start-qwen", "stop-qwen"]);
-  assert.equal(status.state, "error");
-  assert.equal(status.current, "unknown");
-  assert.equal(status.currentModelId, wrongModelId);
-  assert.equal(status.rollback.succeeded, false);
-  assert.match(status.rollback.error, /cleanup failed/);
-});
-
-test("failure output is preserved separately while rollback appends more logs", async () => {
-  const { manager } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), stopped(), reachable(DEEPSEEK_ID)],
-    runCommand: async (command, { onLine }) => {
-      if (command === "start-qwen") {
-        onLine("QWEN ROOT CAUSE: port still busy");
-        throw new Error("qwen boot failed");
-      }
-      if (command === "start-deepseek") {
-        for (let index = 0; index < 60; index += 1) onLine(`rollback line ${index}`);
-      }
-    },
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.equal(status.state, "error");
-  assert.ok(status.failureLog.some((line) => line.includes("QWEN ROOT CAUSE")));
-  assert.ok(status.log.length <= 40);
-});
-
-test("rollback source verification reports the detected wrong model", async () => {
-  const wrongModelId = "rollback-wrong-model";
-  const { manager, commands } = makeManager({
-    probes: [reachable(DEEPSEEK_ID), stopped(), stopped(), reachable(wrongModelId)],
-    failCommands: new Map([["start-qwen", "qwen boot failed"]]),
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-deepseek", "start-qwen", "stop-qwen", "start-deepseek"]);
-  assert.equal(status.state, "error");
-  assert.equal(status.current, "unknown");
-  assert.equal(status.currentModelId, wrongModelId);
-  assert.equal(status.rollback.succeeded, false);
-  assert.match(status.rollback.error, /rollback verification failed/);
-});
-
-test("rollback failure is reported without hiding the original failure", async () => {
-  const { manager, commands } = makeManager({
-    probes: [reachable(QWEN_ID), stopped(), stopped()],
-    failCommands: new Map([
-      ["start-deepseek", "deepseek boot failed"],
-      ["start-qwen", "qwen rollback failed"],
-    ]),
-  });
-  await manager.beginSwitch("deepseek");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-qwen", "start-deepseek", "stop-deepseek", "start-qwen"]);
-  assert.equal(status.state, "error");
-  assert.equal(status.current, "stopped");
-  assert.equal(status.rollback.attempted, true);
-  assert.equal(status.rollback.succeeded, false);
-  assert.match(status.rollback.error, /qwen rollback failed/);
-  assert.match(status.error, /deepseek boot failed/);
-});
-
-test("qwen-to-glm switch stops qwen, starts glm, and verifies the exact GLM model ID", async () => {
-  let delays = 0;
-  const { manager, commands } = makeManager({
-    probes: [reachable(QWEN_ID), reachable(QWEN_ID), stopped(), reachable(GLM_ID)],
-    delay: async () => {
-      delays += 1;
-    },
-  });
-  const result = await manager.beginSwitch("glm");
-  assert.equal(result.started, true);
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-qwen", "start-glm"]);
-  assert.equal(delays, 1);
-  assert.equal(status.state, "idle");
-  assert.equal(status.phase, "complete");
-  assert.equal(status.current, "glm");
-  assert.equal(status.currentModelId, GLM_ID);
-  assert.equal(status.message, "Fixture GLM Label is healthy");
-});
-
-test("wrong GLM model ID after startup is failure with rollback to the qwen source", async () => {
-  const wrongModelId = "rogue-glm-model";
-  const { manager, commands } = makeManager({
-    probes: [
-      reachable(QWEN_ID),
-      stopped(),
-      reachable(wrongModelId),
-      stopped(),
-      reachable(QWEN_ID),
-    ],
-  });
-  await manager.beginSwitch("glm");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-qwen", "start-glm", "stop-glm", "start-qwen"]);
-  assert.equal(status.state, "error");
-  assert.match(status.error, new RegExp(`expected ${GLM_ID.replace("/", "\\/")}`));
-  assert.deepEqual(status.rollback, { attempted: true, succeeded: true, error: null });
-});
-
-test("glm failure with rollback disabled cleans up the target without restarting qwen", async () => {
-  const { manager, commands } = makeManager({
-    probes: [reachable(QWEN_ID), stopped(), stopped()],
-    failCommands: new Map([["start-glm", "glm boot failed"]]),
-    disableRollbackTargets: new Set(["glm"]),
-  });
-  await manager.beginSwitch("glm");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.deepEqual(commands, ["stop-qwen", "start-glm", "stop-glm"]);
-  assert.equal(commands.includes("start-qwen"), false);
-  assert.equal(status.state, "error");
-  assert.equal(status.phase, "error");
-  assert.equal(status.current, "stopped");
-  assert.deepEqual(status.rollback, null);
-  assert.match(status.error, /glm boot failed/);
-  assert.match(status.message, /rollback is disabled/);
-});
-
-test("starting glm from a stopped port issues no stop command", async () => {
-  const { manager, commands } = makeManager({
-    probes: [stopped(), stopped(), reachable(GLM_ID)],
-  });
-  await manager.beginSwitch("glm");
-  await manager.waitForIdle();
-  assert.deepEqual(commands, ["start-glm"]);
-  const status = await manager.getStatus({ refresh: false });
-  assert.equal(status.state, "idle");
-  assert.equal(status.current, "glm");
-  assert.equal(status.currentModelId, GLM_ID);
-});
-
-test("routes enforce key, enum, busy, and async/no-op response codes", async () => {
-  const routes = { get: new Map(), post: new Map() };
-  const app = {
-    get: (path, handler) => routes.get.set(path, handler),
-    post: (path, handler) => routes.post.set(path, handler),
-  };
-  let beginResult = { started: true, status: { state: "switching" } };
-  const manager = {
-    getStatus: async () => ({ state: "idle", current: "deepseek" }),
-    targets: () => ({
-      deepseek: { modelId: "fixture-deepseek-model", label: "Fixture DeepSeek" },
-      qwen: { modelId: "fixture-qwen-model", label: "Fixture Qwen" },
-      glm: { modelId: "fixture-glm-model", label: "Fixture GLM" },
-    }),
-    beginSwitch: async (target) => {
-      if (target === "qwen" && (beginResult === "busy" || beginResult === "unsafe")) {
-        const error = new Error(beginResult);
-        error.code = beginResult === "busy" ? "BUSY" : "UNSAFE_STATE";
-        throw error;
-      }
-      return beginResult;
-    },
-  };
-  registerLocalLlmRoutes(app, { manager, keyOk: (key) => key === "valid", writesEnabled: () => true });
-
-  function response() {
-    return {
-      statusCode: 200,
-      body: null,
-      status(code) {
-        this.statusCode = code;
-        return this;
-      },
-      json(body) {
-        this.body = body;
-        return this;
-      },
-    };
+test("unknown API and overlapping runtime ownership are rejected", async () => {
+  for (const change of [
+    (h) => { h.observations.b.modelId = "unmanaged-model"; },
+    (h) => { h.activate("joined"); },
+  ]) {
+    const h = fixture(); change(h);
+    await assert.rejects(h.manager.beginSwitch(linked()), /unknown|overlapping/);
+    assert.deepEqual(h.calls, []);
   }
-
-  const statusRes = response();
-  await routes.get.get("/api/local-llm/status")({}, statusRes);
-  assert.equal(statusRes.statusCode, 200);
-  assert.equal(statusRes.body.writesEnabled, true);
-  assert.equal(statusRes.body.current, "deepseek");
-  assert.deepEqual(statusRes.body.labels, {
-    deepseek: "Fixture DeepSeek",
-    qwen: "Fixture Qwen",
-    glm: "Fixture GLM",
-  });
-
-  const badTarget = response();
-  await routes.post.get("/api/local-llm/switch")({ body: { target: "shell", key: "valid" } }, badTarget);
-  assert.equal(badTarget.statusCode, 400);
-
-  const badKey = response();
-  await routes.post.get("/api/local-llm/switch")({ body: { target: "qwen", key: "bad" } }, badKey);
-  assert.equal(badKey.statusCode, 403);
-
-  const started = response();
-  await routes.post.get("/api/local-llm/switch")({ body: { target: "qwen", key: "valid" } }, started);
-  assert.equal(started.statusCode, 202);
-
-  beginResult = { started: false, status: { state: "idle", current: "qwen" } };
-  const noop = response();
-  await routes.post.get("/api/local-llm/switch")({ body: { target: "qwen", key: "valid" } }, noop);
-  assert.equal(noop.statusCode, 200);
-
-  beginResult = "busy";
-  const busy = response();
-  await routes.post.get("/api/local-llm/switch")({ body: { target: "qwen", key: "valid" } }, busy);
-  assert.equal(busy.statusCode, 409);
-
-  beginResult = "unsafe";
-  const unsafe = response();
-  await routes.post.get("/api/local-llm/switch")({ body: { target: "qwen", key: "valid" } }, unsafe);
-  assert.equal(unsafe.statusCode, 409);
 });
 
-test("lifecycle output is bounded and redacts secret-bearing lines", async () => {
-  const lines = Array.from({ length: 60 }, (_, i) =>
-    i === 31 ? "Authorization: Bearer secret-value" : `safe line ${i}`
-  );
-  const { manager } = makeManager({
-    probes: [stopped(), stopped(), reachable(QWEN_ID)],
-    runCommand: async (_command, { onLine }) => lines.forEach((line) => onLine(line)),
-  });
-  await manager.beginSwitch("qwen");
-  await manager.waitForIdle();
-  const status = await manager.getStatus({ refresh: false });
-  assert.ok(status.log.length <= 40);
-  assert.equal(status.log.some((line) => line.includes("secret-value")), false);
+test("worker-only remnant of a linked runtime is detected and stopped", async () => {
+  const h = fixture([]);
+  h.observations.b.running = ["joined-b"];
+  const before = await h.manager.getStatus();
+  assert.deepEqual(before.current, linked());
+  assert.equal(before.nodes[1].health, "degraded");
+  assert.equal(h.roles.length, 0);
+  const result = await h.switch(pair());
+  assert.deepEqual(result.current, pair());
+  assert.equal(h.mutations()[0], "joined:stop");
+});
+
+test("a per-node request is refused while a linked runtime owns either node", async () => {
+  const h = fixture(["joined"]);
+  await assert.rejects(h.manager.beginSwitch({ node: "b", target: "b1" }), /whole topology/);
+  assert.deepEqual(h.calls, []);
+});
+
+test("preflight failure occurs before any runtime is stopped", async () => {
+  const h = fixture();
+  h.onRun = (_id, action) => { if (action === "preflight") throw new Error("model files missing"); };
+  const result = await h.switch(linked());
+  assert.equal(result.state, "error");
+  assert.deepEqual(result.current, pair());
+  assert.deepEqual(h.mutations(), []);
+});
+
+test("leftover worker container prevents starting the target after a nominally successful stop", async () => {
+  const h = fixture(["joined"]);
+  h.onRun = (id, action) => {
+    if (id === "joined" && action === "stop") { h.observations.a = { reachable: false, modelId: null, running: [], error: null }; return true; }
+  };
+  const result = await h.switch(pair());
+  assert.equal(result.state, "error");
+  assert.equal(h.calls.includes("a1:start"), false);
+  assert.equal(h.calls.includes("b1:start"), false);
+  assert.match(result.recoveries[0].error, /stop/);
+});
+
+test("daemonized start waits for the advertised model ID before changing roles", async () => {
+  const h = fixture([]);
+  let probes = 0;
+  h.onRun = (id, action) => {
+    if (action === "start") {
+      h.observations.a.running = ["a1-a"];
+      h.onObserve = () => { if (++probes === 3) h.activate(id); };
+      return true;
+    }
+  };
+  const result = await h.switch({ node: "a", target: "a1" });
+  assert.equal(result.state, "idle");
+  assert.ok(probes >= 3);
+  assert.equal(h.roles.length, 1);
+});
+
+test("readiness timeout triggers cleanup instead of reporting a successful daemon launch", async () => {
+  const h = fixture([]);
+  h.onRun = (_id, action) => action === "start" ? true : undefined;
+  const result = await h.switch({ node: "a", target: "a1" });
+  assert.equal(result.state, "error");
+  assert.match(result.error, /Timed out waiting/);
+  assert.ok(h.calls.includes("a1:stop"));
+});
+
+test("a failed cleanup does not launch a previous model onto an occupied node", async () => {
+  const h = fixture();
+  h.onRun = (id, action) => {
+    if (id === "a2" && action === "start") { h.activate(id); throw new Error("start failed"); }
+    if (id === "a2" && action === "stop") throw new Error("cleanup failed");
+  };
+  const result = await h.switch({ node: "a", target: "a2" });
+  assert.equal(result.recoveries[0].succeeded, false);
+  assert.match(result.recoveries[0].error, /cleanup failed/);
+  assert.equal(h.calls.includes("a1:start"), false);
+});
+
+test("SSH loss leaves the durable operation pending and never launches automatic cleanup", async () => {
+  const h = fixture();
+  h.onRun = (id, action) => { if (id === "joined" && action === "start") throw Object.assign(new Error("SSH lost"), { uncertain: true }); };
+  const result = await h.switch(linked());
+  assert.equal(result.interrupted, true);
+  assert.equal(h.calls.includes("joined:stop"), false);
+  assert.equal(h.roles.length, 0);
+  await assert.rejects(h.manager.beginSwitch(pair()), /Unfinished/);
+  h.activate("joined");
+  const reconciled = await h.manager.reconcile();
+  assert.equal(reconciled.interrupted, false);
+  assert.deepEqual(reconciled.current, linked());
+});
+
+test("reconciliation will not clear a pending operation while a host command is still running", async () => {
+  const h = fixture(); h.store.acquire(pair());
+  h.onCheck = () => { throw Object.assign(new Error("host lock held"), { code: "BUSY" }); };
+  await assert.rejects(h.manager.reconcile(), /host lock/);
+  assert.ok(h.store.read());
+  assert.deepEqual(h.calls, []);
+});
+
+test("restarted server requires explicit reconciliation and does not change roles on GET", async () => {
+  const h = fixture(); h.store.acquire(linked());
+  const status = await h.manager.getStatus();
+  assert.equal(status.interrupted, true);
+  assert.equal(h.roles.length, 0);
+  h.store.read().pid = process.pid + 100;
+  h.store.ownerAlive = () => true;
+  await assert.rejects(h.manager.reconcile(), /owner is still running/);
+  h.store.ownerAlive = () => false;
+  await h.manager.reconcile();
+  assert.equal(h.store.read(), null);
+  assert.equal(h.roles.at(-1).b.role, "head");
+});
+
+test("concurrent requests are rejected even while the initial probe is still pending", async () => {
+  const h = fixture(); const waiting = deferred();
+  h.onObserve = () => waiting.promise;
+  const first = h.manager.beginSwitch(linked());
+  await assert.rejects(h.manager.beginSwitch(pair()), /already in progress/);
+  waiting.resolve();
+  await first; await h.manager.waitForIdle();
+});
+
+test("a stale status probe cannot overwrite a newer completed switch or its roles", async () => {
+  const h = fixture(); const pending = deferred(); const old = structuredClone(h.observations);
+  let first = true;
+  h.executor.observe = async () => {
+    if (first) { first = false; await pending.promise; return old; }
+    return structuredClone(h.observations);
+  };
+  const poll = h.manager.getStatus();
+  await h.switch(linked());
+  pending.resolve();
+  assert.deepEqual((await poll).current, linked());
+  assert.equal(h.roles.at(-1).b.role, "worker");
+});
+
+test("status adopts two healthy head roles without restarting models", async () => {
+  const h = fixture();
+  await h.manager.getStatus();
+  assert.equal(h.roles.at(-1).b.role, "head");
+  assert.deepEqual(h.calls, []);
+});
+
+test("request validation rejects incomplete selections, cross-node models, unknown profiles and injected commands", () => {
+  const config = normalizeRuntimeConfig(configInput());
+  for (const request of [null, {}, { mode: "independent", selections: { a: "a1" } },
+    pair("b1", "a1"), pair("a1", null), linked("a1"), { node: "a", target: "b1" }, { target: "$(touch /tmp/x)" },
+    { mode: "independent", selections: { a: "a1", b: "b1", extra: "b1" } }]) {
+    assert.throws(() => validateSwitchRequest(request, config), (error) => error.code === "INVALID");
+  }
+  assert.deepEqual(validateSwitchRequest({ ...linked(), start: "arbitrary command" }, config), linked());
+  assert.deepEqual(validateSwitchRequest({ target: "joined" }, config), linked());
+});
+
+test("configuration rejects ambiguous ownership and exposes only public profile metadata", () => {
+  const config = normalizeRuntimeConfig(configInput());
+  const catalog = publicRuntimeConfig(config, () => null);
+  assert.equal(catalog.runtimes[0].start, undefined);
+  assert.equal(catalog.nodes[0].hostUser, undefined);
+  for (const change of [
+    (input) => { input.version = 1; },
+    (input) => { input.nodes.c = {}; },
+    (input) => { input.runtimes.a2.containers.a = "a1-a"; },
+    (input) => { input.runtimes.a2.modelId = "a1"; },
+    (input) => { input.runtimes.a1.apiNode = "unknown"; },
+    (input) => { input.runtimes.a1.startupTimeoutMs = -1; },
+    (input) => { input.hostUser = "bad;user"; },
+  ]) { const input = configInput(); change(input); assert.throws(() => normalizeRuntimeConfig(input), /configuration/); }
+});
+
+test("linked health requires both member containers and a stopped worker API", () => {
+  const h = fixture(["joined"]);
+  assert.equal(inspectRuntimes(h.config, h.observations).healthy.joined, true);
+  h.observations.b.running = [];
+  assert.equal(inspectRuntimes(h.config, h.observations).healthy.joined, false);
+  h.observations.b.running = ["joined-b"];
+  h.observations.b.reachable = true;
+  assert.equal(inspectRuntimes(h.config, h.observations).healthy.joined, false);
+});
+
+test("unprepared profiles cannot be selected but their running containers remain recognized", async () => {
+  const input = configInput(); input.runtimes.joined.disabledReason = "Image not installed";
+  const h = fixture(["joined"], input);
+  await assert.rejects(h.manager.beginSwitch(linked()), /Image not installed/);
+  const result = await h.switch(pair());
+  assert.deepEqual(result.current, pair());
+  assert.equal(h.mutations()[0], "joined:stop");
+});
+
+test("HTTP routes authenticate writes, reject invalid requests, and distinguish accepted operations from no-ops", async () => {
+  const h = fixture(); const routes = new Map();
+  const app = { get: (path, handler) => routes.set(`GET ${path}`, handler), post: (path, handler) => routes.set(`POST ${path}`, handler) };
+  registerLocalLlmRoutes(app, { manager: h.manager, keyOk: (key) => key === "fixture", writesEnabled: () => true });
+  const request = async (path, body) => {
+    const res = { code: 200, status(code) { this.code = code; return this; }, json(value) { this.body = value; return this; } };
+    await routes.get(path)({ body }, res); return res;
+  };
+  assert.equal((await request("POST /api/local-llm/switch", linked())).code, 403);
+  assert.equal((await request("POST /api/local-llm/reconcile", {})).code, 403);
+  assert.equal((await request("POST /api/local-llm/switch", { key: "fixture", mode: "invalid" })).code, 400);
+  assert.equal((await request("POST /api/local-llm/switch", { ...pair(), key: "fixture" })).code, 200);
+  assert.equal((await request("POST /api/local-llm/switch", { ...linked(), key: "fixture" })).code, 202);
+  await h.manager.waitForIdle();
+  const result = await request("GET /api/local-llm/status");
+  assert.equal(result.body.writesEnabled, true);
+  assert.deepEqual(result.body.current, linked());
 });

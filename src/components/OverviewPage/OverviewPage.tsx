@@ -1,3 +1,4 @@
+import { LocalLlmControl } from "../SparkPage/LocalLlmControl";
 import { useEffect, useState } from "react";
 import type { SparkSnapshot } from "../../api/types";
 import { isWorkerSpark, resolveSparkRole } from "../../api/sparkRole";
@@ -722,6 +723,7 @@ export function OverviewPage({
           />
         ))}
       </div>
+      <LocalLlmControl />
     </div>
   );
 }

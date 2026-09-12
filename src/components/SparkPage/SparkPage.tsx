@@ -177,7 +177,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit }: SparkPageProps) {
   }, [spark.id]);
 
   const llmOn = isLlmMonitoringEnabled(spark);
-  const showRuntimeControl = Boolean(spark.isLocal && spark.role === "head");
+  const showRuntimeControl = Boolean(spark.isLocal || spark.role === "head" || spark.role === "worker");
   const comfyOn = Boolean(spark.comfyMonitoring);
   const tailscaleOn = Boolean(spark.tailscaleMonitoring);
   /** First LLM + Comfy share a row when both are on. */
@@ -310,7 +310,7 @@ export function SparkPage({ spark, temperatureUnit, onEdit }: SparkPageProps) {
         )}
         {showServices && servicesOpen && (
           <>
-            {showRuntimeControl && <LocalLlmControl />}
+            {showRuntimeControl && <LocalLlmControl sparkId={spark.id} />}
             {llmOn &&
               primaryPort != null &&
               renderLlmPanel(

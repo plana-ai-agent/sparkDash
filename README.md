@@ -432,17 +432,50 @@ Copy `.env.example` to `.env` if needed:
 | `SPARKDASH_ECO_KEY` | _(unset)_ | Shared write key for GPU ECO, CPU ECO, and Local LLM switching. Falls back to `config/eco_key.txt`. |
 | `ECO_KEY_PATH` | `config/eco_key.txt` | Override the shared control key file. |
 | `LOCAL_LLM_CONFIG_PATH` | `config/local-llm.json` | Override the deployment's Local LLM runtime configuration file. |
-| `LOCAL_LLM_CMD_PATH` | derived | `PATH` passed to the Local LLM runtime command shell. |
+| `LOCAL_LLM_OPERATION_PATH` | `config/local-llm-operation.json` | Durable unfinished-operation record; keep it across restarts. |
 | `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS` | _(empty)_ | Comma-separated Local LLM targets that skip auto-rollback on failed switches. |
 
-> The Local LLM runtime panel is configured per deployment in `config/local-llm.json`
-> (gitignored; see `config/local-llm.example.json` for the schema). Each entry defines a
-> runtime target with its `/v1/models` model ID, display label, and allowlisted host
-> lifecycle commands. The target keys are `deepseek`, `qwen`, and `glm`; copy the example
-> and repeat its `<target>` block per runtime. When a required value is missing the
-> dashboard keeps running, but `/api/local-llm/*` answers with a configuration
-> error instead of starting or stopping runtimes. JSON fields take precedence over the
-> deprecated `LOCAL_LLM_*` environment variables, which fill omitted fields.
+The **Local LLM Runtime** panel on Overview and either node switches between
+**Independent** (two heads, one model per node) and **Linked** (one head and one worker
+serving the same model). Independent mode supports applying both selections together
+or switching one node; unchanged nodes keep running. Linked transitions stop and
+verify both nodes before starting the selected configuration. Roles and LLM monitoring
+follow the verified running topology, including an existing deployment at startup.
+
+Configure `config/local-llm.json` (gitignored) using the version 2 example in
+`config/local-llm.example.json`. Replace `node-1`/`node-2` with registered Spark IDs.
+Each runtime maps its participating nodes to unique Docker container names and declares
+the API node, exact `/v1/models` ID, label, and start/stop commands. A single member is
+an independent profile; two members form a linked profile with a headless worker.
+Add more independent profiles on each node to offer different model choices. Commands
+run on `apiNode` as its configured `hostUser`; linked commands must operate both nodes.
+Optional `preflight` checks run before stopping anything and must allow an existing
+runtime to occupy the port. Use them to check installed scripts, weights, images and SSH.
+
+Launchers run in a clean host environment (`HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`,
+`LANG`) with a host-side timeout and lock; load deployment-specific settings in the
+configured command or launcher. The host requires `flock`, `timeout`, Docker access,
+and a writable `hostHome/.cache`. SSH nodes use their registered address and credentials;
+their SSH user must match `hostUser`. `startupTimeoutMs` defaults to 30 minutes and
+`stopTimeoutMs` to 90 seconds (both configurable from 1 second to 2 hours).
+Readiness requires the exact API model and all member containers, even for launchers
+that return immediately after `docker run -d`.
+
+Failed independent changes restore only the affected node; a transition into or out of
+linked mode restores the prior configuration as a group. Set `rollback: false` on a
+target (or use `LOCAL_LLM_DISABLE_ROLLBACK_TARGETS`) to clean up without restoring the
+source. Unknown APIs or unreachable nodes block new switches. After an interrupted
+operation or uncertain SSH failure, **Reconcile interrupted operation** checks both
+hosts and their running state before releasing the persistent operation record.
+Reconciliation does not start or stop models. Client model selections remain manual.
+Use `disabledReason` on an unprepared profile to explain why it cannot be selected;
+its containers are still recognized for inspection and cleanup. Remove that field
+and restart sparkDash after preparing the profile.
+
+Version 1 configurations and the old command/model environment-variable fallback must
+be migrated to version 2. Missing or invalid configuration leaves monitoring available
+but disables runtime operations with a configuration error. Runtime commands are never
+accepted from HTTP requests or returned by the status API.
 
 GPU and CPU ECO share authentication and route handling in `server/ecoCommon.js` and
 `server/ecoRoutes.js`; hardware commands remain in `server/eco.js` and `server/cpuEco.js`.

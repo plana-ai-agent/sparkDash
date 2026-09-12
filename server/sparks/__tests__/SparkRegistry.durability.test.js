@@ -63,3 +63,37 @@ test("failed remove preserves registry entry, secrets, and listeners", () => {
   assert.equal(r.hasPassword("existing"), true);
   assert.deepEqual(events, []);
 });
+
+test("runtime topology changes both roles atomically and preserves unrelated node configuration", () => {
+  const r = registry();
+  r.updateSpark("existing", { role: "head", llmPorts: [11434] });
+  r.addSpark({ id: "second", name: "Second", lanIp: "127.0.0.2", role: "worker", workerHeadId: "existing" });
+  const events = [];
+  r.onChange((action) => events.push(action));
+  const topology = { existing: { role: "head", workerHeadId: null, port: 8888 }, second: { role: "head", workerHeadId: null, port: 8888 } };
+  assert.deepEqual(r.updateRuntimeTopology(topology), ["existing", "second"]);
+  assert.equal(r.getSpark("second").role, "head");
+  assert.equal(r.getSpark("second").workerHeadId, null);
+  assert.equal(r.getSpark("existing").name, "Before");
+  assert.ok(r.getSpark("existing").llmPorts.includes(11434));
+  assert.ok(r.getSpark("existing").llmPorts.includes(8888));
+  assert.equal(r.hasPassword("existing"), true);
+  const saved = JSON.parse(fs.readFileSync(process.env.SPARKS_JSON_PATH));
+  assert.ok(saved.sparks.every((spark) => spark.role === "head"));
+  assert.deepEqual(events, ["update", "update"]);
+  events.length = 0;
+  assert.deepEqual(r.updateRuntimeTopology(topology), []);
+  assert.deepEqual(events, []);
+});
+
+test("failed topology save leaves both roles and listeners untouched", () => {
+  const r = registry();
+  r.addSpark({ id: "second", name: "Second", lanIp: "127.0.0.2", role: "worker", workerHeadId: "existing" });
+  const before = [r.getSpark("existing"), r.getSpark("second")];
+  const events = [];
+  r.onChange((action) => events.push(action));
+  failRegistryWrites(r);
+  assert.throws(() => r.updateRuntimeTopology({ existing: { role: "head", port: 8888 }, second: { role: "head", port: 8888 } }), /write failure/);
+  assert.deepEqual([r.getSpark("existing"), r.getSpark("second")], before);
+  assert.deepEqual(events, []);
+});
